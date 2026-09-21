@@ -85,9 +85,30 @@ def run():
     from strategy.strategy_base     import Signal
     from monitoring.logger          import AlgoLogger
     from monitoring.alerts          import TelegramAlerter
+    from execution.order_manager    import OrderManager
+    from execution.position_manager import PositionManager
+    from risk.position_sizer        import PositionSizer
+    from risk.circuit_breaker       import CircuitBreaker
 
     algo_logger = AlgoLogger()
     alerter     = TelegramAlerter()
+
+    # Auto-execution is OFF by default (trading.auto_execute in settings.yaml).
+    # With it off, order_mgr/position_mgr/sizer/breaker are never touched —
+    # the loop below behaves exactly as it always has (alerts only).
+    auto_execute = bool(trading_cfg.get("auto_execute", False))
+    order_mgr    = OrderManager(smart_obj=obj) if auto_execute else None
+    position_mgr = PositionManager() if auto_execute else None
+    sizer        = PositionSizer(capital=capital, per_trade_risk_pct=risk_cfg["per_trade_risk_pct"]) if auto_execute else None
+    breaker      = CircuitBreaker(
+        capital=capital,
+        daily_loss_limit_pct=risk_cfg["daily_loss_limit_pct"],
+        max_trades_per_day=trading_cfg["max_trades_per_day"],
+        max_concurrent=trading_cfg["max_concurrent_positions"],
+        max_consecutive_losses=risk_cfg["max_consecutive_losses"],
+    ) if auto_execute else None
+    token_exchange = {str(inst["token"]): inst["exchange"] for inst in watchlist}
+    logger.info(f"Auto-execute: {'ENABLED — orders will be placed (' + mode.upper() + ' mode)' if auto_execute else 'disabled — alerts only'}")
 
     # ------------------------------------------------------------------
     # 1. Auth
@@ -200,6 +221,18 @@ def run():
             if (not allow_after_hours
                     and (now.hour > sq_off_h or (now.hour == sq_off_h and now.minute >= sq_off_m))):
                 logger.info("EOD time reached — ending session.")
+                if auto_execute and position_mgr.open_count() > 0:
+                    for pos in position_mgr.get_all_positions():
+                        ltp = current_ltps.get(pos["token"], pos["entry_price"])
+                        exit_txn = "SELL" if pos["direction"] == "long" else "BUY"
+                        exit_order_id = order_mgr.place_order(
+                            symbol=pos["symbol"], token=pos["token"],
+                            exchange=token_exchange.get(pos["token"], "NSE"),
+                            transaction=exit_txn, qty=pos["qty"], order_type="MARKET",
+                        )
+                        pnl = position_mgr.close_position(pos["token"], ltp, exit_order_id or "")
+                        breaker.on_trade_close(pnl)
+                        alerter.send_order_closed(exit_order_id or "?", pos["symbol"], ltp, pnl)
                 break
 
             # ----------------------------------------------------------
@@ -223,10 +256,43 @@ def run():
                     
                     # Send Alert
                     alerter.send_trade_alert(top_signal)
-                    
-                    # PLACEHOLDER FOR EXECUTION: 
-                    # order_mgr.place_order(...) goes here
-                
+
+                    # ----------------------------------------------------
+                    # Auto-execution (only when trading.auto_execute: true)
+                    # ----------------------------------------------------
+                    if auto_execute:
+                        can, block_reason = breaker.can_trade()
+                        if not can:
+                            logger.warning(f"[AutoExec] Skipped {top_signal.symbol}: {block_reason}")
+                            continue
+                        if position_mgr.has_position(top_signal.token):
+                            logger.warning(f"[AutoExec] Already in a position for {top_signal.symbol} — skipping.")
+                            continue
+
+                        qty = sizer.compute_qty(top_signal.entry_price, top_signal.stop_loss)
+                        if qty <= 0:
+                            logger.warning(f"[AutoExec] Qty computed as 0 for {top_signal.symbol} — skipping.")
+                            continue
+
+                        txn = "BUY" if top_signal.signal == Signal.BUY else "SELL"
+                        order_id = order_mgr.place_order(
+                            symbol=top_signal.symbol, token=top_signal.token,
+                            exchange=token_exchange.get(top_signal.token, "NSE"),
+                            transaction=txn, qty=qty, order_type="MARKET",
+                        )
+                        if order_id:
+                            position_mgr.open_position(
+                                symbol=top_signal.symbol, token=top_signal.token,
+                                direction="long" if txn == "BUY" else "short",
+                                qty=qty, entry_price=top_signal.entry_price,
+                                stop_loss=top_signal.stop_loss, target=top_signal.target,
+                                order_id=order_id,
+                            )
+                            breaker.on_trade_open()
+                            alerter.send_order_placed(order_id, top_signal, qty)
+                        else:
+                            alerter.send_order_failed(top_signal.symbol, "OrderManager.place_order returned None")
+
                 # Reset buffer
                 signal_buffer.clear()
                 buffer_flush_time = 0.0
@@ -298,12 +364,27 @@ def run():
             elif signal.is_exit():
                 ltp = current_ltps.get(token, signal.entry_price)
                 logger.info(f"[EXIT] {signal.symbol} | {signal.reason} | LTP=₹{ltp:.2f}")
+
+                pnl = None
+                if auto_execute and position_mgr.has_position(token):
+                    pos = position_mgr.get_position(token)
+                    exit_txn = "SELL" if pos["direction"] == "long" else "BUY"
+                    exit_order_id = order_mgr.place_order(
+                        symbol=pos["symbol"], token=token,
+                        exchange=token_exchange.get(token, "NSE"),
+                        transaction=exit_txn, qty=pos["qty"], order_type="MARKET",
+                    )
+                    pnl = position_mgr.close_position(token, ltp, exit_order_id or "")
+                    breaker.on_trade_close(pnl)
+                    alerter.send_order_closed(exit_order_id or "?", signal.symbol, ltp, pnl)
+
                 alerter.send_exit_alert(
                     symbol      = signal.symbol,
                     direction   = "long" if signal.signal == Signal.EXIT_LONG else "short",
                     exit_price  = ltp,
                     entry_price = signal.entry_price,
                     reason      = signal.reason,
+                    pnl         = pnl,
                 )
 
     except KeyboardInterrupt:
@@ -317,6 +398,9 @@ def run():
             algo_logger.log_system("Session ended — no setups found")
         else:
             alerter.send_session_end()
+
+        if auto_execute:
+            alerter.send_daily_summary(position_mgr.session_summary(), capital)
 
         sm.logout()
         logger.info("=== Session ended ===")

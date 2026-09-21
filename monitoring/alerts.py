@@ -56,7 +56,8 @@ def _send_sync(message: str) -> None:
 class TelegramAlerter:
     """
     Sends clear, actionable trade notifications to Telegram.
-    Does NOT trigger any order execution.
+    Never places orders itself — order placement (when trading.auto_execute
+    is enabled) happens in main.py; this class only reports on it.
     """
 
     # ---------------------------------------------------------------
@@ -66,7 +67,8 @@ class TelegramAlerter:
     def send_trade_alert(self, trade_signal) -> None:
         """
         Main entry alert — sent when strategy finds a high-confidence setup.
-        Ultra-minimal format: only what to trade.
+        Includes R:R and a per-factor confidence breakdown so the reasoning
+        behind the pick is transparent, not just the raw numbers.
         """
         from strategy.strategy_base import Signal
 
@@ -75,12 +77,24 @@ class TelegramAlerter:
         entry  = trade_signal.entry_price
         sl     = trade_signal.stop_loss
         target = trade_signal.target
+        risk   = abs(entry - sl)
+        reward = abs(target - entry)
+
+        factors_txt = ""
+        if trade_signal.confidence_factors:
+            factors_txt = "\n" + "\n".join(
+                f"  • {name.replace('_', ' ').title()}: {score:.0f}/20"
+                for name, score in trade_signal.confidence_factors.items()
+            )
 
         msg = (
             f"⚡ <b>{action} {symbol}</b>\n"
             f"Entry: ₹{entry:.2f}\n"
-            f"SL: ₹{sl:.2f}\n"
-            f"Target: ₹{target:.2f}"
+            f"SL: ₹{sl:.2f} (₹{risk:.2f} risk)\n"
+            f"Target: ₹{target:.2f} (₹{reward:.2f} reward)\n"
+            f"R:R: {trade_signal.rr_ratio:.2f}\n"
+            f"Confidence: {trade_signal.confidence:.0f}/100 {trade_signal.confidence_label()}"
+            f"{factors_txt}"
         )
         _send_sync(msg)
 
@@ -89,11 +103,15 @@ class TelegramAlerter:
         """
         Exit alert — tells you to close your position.
         """
-        action = "SELL" if "long" in direction.lower() else "BUY TO COVER"
+        action  = "SELL" if "long" in direction.lower() else "BUY TO COVER"
+        pnl_txt = f"\nP&L: ₹{pnl:+,.2f}" if pnl is not None else ""
         msg = (
             f"🚨 <b>EXIT {symbol}</b>\n"
             f"Action: {action}\n"
-            f"Exit Price: ₹{exit_price:.2f}"
+            f"Entry: ₹{entry_price:.2f}\n"
+            f"Exit Price: ₹{exit_price:.2f}\n"
+            f"Reason: {reason}"
+            f"{pnl_txt}"
         )
         _send_sync(msg)
 
@@ -124,11 +142,30 @@ class TelegramAlerter:
         _send_sync(f"🤖 {message}")
 
     # ---------------------------------------------------------------
-    # PLACEHOLDER: Future auto-execution notification
+    # Auto-execution notifications — only fired when trading.auto_execute
+    # is true in config/settings.yaml. Distinguishes an actually-placed
+    # order from a plain alert so you can tell paper/live fills apart.
     # ---------------------------------------------------------------
-    # When auto-execution is enabled, call this AFTER an order is placed
-    # to confirm execution vs. just alerting.
-    #
-    # def send_order_placed(self, order_id: str, trade_signal, qty: int) -> None:
-    #     """PLACEHOLDER — fires when auto-execution is enabled."""
-    #     raise NotImplementedError("Auto-execution not yet enabled.")
+
+    def send_order_placed(self, order_id: str, trade_signal, qty: int) -> None:
+        from strategy.strategy_base import Signal
+        action = "BUY" if trade_signal.signal == Signal.BUY else "SELL"
+        msg = (
+            f"✅ <b>ORDER PLACED</b> {action} {qty}x{trade_signal.symbol}\n"
+            f"Entry: ₹{trade_signal.entry_price:.2f} | SL: ₹{trade_signal.stop_loss:.2f} "
+            f"| Target: ₹{trade_signal.target:.2f}\n"
+            f"Order ID: {order_id}"
+        )
+        _send_sync(msg)
+
+    def send_order_failed(self, symbol: str, reason: str) -> None:
+        _send_sync(f"❌ <b>ORDER FAILED</b> {symbol}\nReason: {reason}")
+
+    def send_order_closed(self, order_id: str, symbol: str, exit_price: float, pnl: float) -> None:
+        emoji = "✅" if pnl >= 0 else "❌"
+        msg = (
+            f"{emoji} <b>ORDER CLOSED</b> {symbol}\n"
+            f"Exit: ₹{exit_price:.2f} | P&L: ₹{pnl:+,.2f}\n"
+            f"Order ID: {order_id}"
+        )
+        _send_sync(msg)

@@ -7,6 +7,12 @@ trading:
   square_off_time: '15:15'
   market_open: 09:15
   market_close: '15:30'
+  # Master switch for automatic order placement. When false (default), the
+  # bot only sends Telegram alerts with entry/SL/target — nothing is placed.
+  # Flip to true only after you've validated alert quality over live paper/
+  # real sessions. Even when true, trading.mode still governs paper vs. live
+  # fills inside OrderManager.
+  auto_execute: false
   # TEMP: keep the live feed running after square-off so we can debug WebSocket
   # outside market hours. Set back to false for normal sessions.
   allow_after_hours: false
