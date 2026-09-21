@@ -40,8 +40,17 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
 
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    rs  = avg_gain / avg_loss.replace(0, np.nan)
+    out = 100 - (100 / (1 + rs))
+
+    # avg_loss.replace(0, nan) turns a strict uptrend (zero losses) into
+    # rs=NaN, which would otherwise propagate as NaN instead of the
+    # correct RSI=100. A flat/no-movement series (avg_gain == avg_loss == 0)
+    # has no directional bias, so it's defined as the neutral midpoint (50)
+    # rather than inheriting the "no losses" branch's 100.
+    out = out.where(avg_loss != 0, 100.0)
+    out = out.where(~((avg_gain == 0) & (avg_loss == 0)), 50.0)
+    return out
 
 
 # ------------------------------------------------------------------

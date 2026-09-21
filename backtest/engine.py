@@ -209,6 +209,7 @@ class BacktestEngine:
             trades.append(trade)
             capital += trade["pnl"]
             equity_curve.append(capital)
+            strategy.force_exit()
 
         return self._compute_metrics(trades, equity_curve)
 
@@ -269,8 +270,9 @@ class BacktestEngine:
         max_dd = float(abs(dd.min()))
 
         # Sharpe (simplified daily returns)
-        pnls  = np.array([t["pnl"] for t in trades])
-        sharpe = float(np.mean(pnls) / np.std(pnls) * np.sqrt(252)) if len(pnls) > 1 else 0.0
+        pnls    = np.array([t["pnl"] for t in trades])
+        pnl_std = np.std(pnls)
+        sharpe  = float(np.mean(pnls) / pnl_std * np.sqrt(252)) if len(pnls) > 1 and pnl_std > 0 else 0.0
 
         result = BacktestResult(
             trades         = trades,
