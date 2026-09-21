@@ -136,5 +136,14 @@ class StrategyBase(ABC):
         """
         pass
 
+    def get_current_stop(self) -> float | None:
+        """
+        Current live stop-loss for an open position (post breakeven/trailing
+        updates), or None if no position or the strategy doesn't manage a
+        moving stop. Callers use this to keep an externally-tracked hard
+        stop level in sync with a strategy's internal trailing logic.
+        """
+        return None
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(symbol={self.symbol})"

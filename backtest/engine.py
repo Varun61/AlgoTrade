@@ -166,6 +166,14 @@ class BacktestEngine:
                         capital += trade["pnl"] - self.cfg.brokerage_per_lot
                         equity_curve.append(capital)
                         current_position = None
+                    else:
+                        # Position remains open — resync our intrabar hard-stop level
+                        # with the strategy's own (breakeven/trailing-adjusted) stop,
+                        # so a future wick is checked against the current stop, not
+                        # the stale one recorded at entry.
+                        live_stop = strategy.get_current_stop()
+                        if live_stop is not None:
+                            current_position["stop_loss"] = live_stop
 
             # Entry check — only for positions that were already flat coming into
             # this candle (a position closed above cannot be re-entered same-candle,

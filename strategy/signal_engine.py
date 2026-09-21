@@ -114,6 +114,10 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self._breakeven_done = False
         self._candles_held   = 0
 
+    def get_current_stop(self) -> float | None:
+        """Live stop-loss (post breakeven/trailing), for callers tracking an intrabar hard stop."""
+        return self._stop_loss if self._position is not None else None
+
     # ---------------------------------------------------------------
     # Main candle handler
     # ---------------------------------------------------------------

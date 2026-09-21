@@ -157,6 +157,54 @@ def test_intrabar_stop_hit_bypasses_strategy_and_calls_force_exit():
     assert tracker["force_exit_calls"] == 1
 
 
+def test_intrabar_stop_uses_strategy_trailing_update_not_stale_entry_stop():
+    """Regression test: after a HOLD candle, the engine must resync its
+    intrabar hard-stop with strategy.get_current_stop() so a subsequent wick
+    is checked against the strategy's tightened (trailing) stop, not the
+    stale stop recorded at entry."""
+
+    class TrailingScripted(ScriptedStrategy):
+        def __init__(self, symbol, token, script, **kwargs):
+            super().__init__(symbol, token, script, **kwargs)
+            self._live_stop = None
+
+        def on_candle_close(self, candle, history):
+            sig = super().on_candle_close(candle, history)
+            # Simulate the strategy tightening its stop on candle 3 (a HOLD).
+            if candle.name == 3:
+                self._live_stop = 95.0  # tighter than the original stop_loss=90
+            return sig
+
+        def get_current_stop(self):
+            return self._live_stop
+
+    script = {
+        2: TradeSignal(signal=Signal.BUY, symbol="TEST-EQ", token="1",
+                       entry_price=100, stop_loss=90, target=200),
+        # candle 3 stays HOLD (default) but triggers the simulated trail above
+    }
+    rows = [
+        _candle(0, 100), _candle(1, 100),
+        _candle(2, 100),                        # entry, stop_loss=90
+        _candle(3, 100, high=101, low=99),       # HOLD candle; stop tightens to 95
+        _candle(4, 93, high=100, low=93),        # low=93: misses stale 90, hits new 95
+    ]
+    candles = pd.DataFrame(rows)
+    engine = BacktestEngine(
+        strategy_class=TrailingScripted, symbol="TEST-EQ", token="1",
+        strategy_kwargs={"script": script},
+        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_per_lot=0.0),
+    )
+    result = engine.run(candles)
+
+    assert result.total_trades == 1
+    assert result.trades[0]["reason"] == "Stop hit"
+    # Exit price is the candle close (engine's _close_position always exits at
+    # candle close once a reason is determined), confirming candle 4 (not a
+    # later one) is where the exit fired.
+    assert result.trades[0]["exit_price"] == 93.0
+
+
 def test_no_same_candle_reentry_after_exit():
     """A position closed on candle i must not be reopened on that same candle."""
     script = {
