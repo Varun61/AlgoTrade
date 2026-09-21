@@ -136,9 +136,17 @@ class BacktestEngine:
                 capital += trade["pnl"] - self.cfg.brokerage_per_lot
                 equity_curve.append(capital)
                 current_position = None
+                strategy.force_exit()
                 continue
 
-            # Exit check on existing position
+            position_was_open = current_position is not None
+
+            # Exit check on existing position.
+            # Intrabar SL/target (using candle high/low) is checked first since the
+            # strategy only ever sees the close price and cannot detect a wick-through.
+            # If neither is hit, defer to the strategy's own exit logic (e.g. EMA
+            # crossover, trailing stop, time stop) so backtest and live share the
+            # exact same exit decision path.
             if current_position:
                 exit_signal = self._check_exits(current_position, candle)
                 if exit_signal:
@@ -148,9 +156,21 @@ class BacktestEngine:
                     capital += trade["pnl"] - self.cfg.brokerage_per_lot
                     equity_curve.append(capital)
                     current_position = None
+                    strategy.force_exit()
+                else:
+                    signal = strategy.on_candle_close(candle, history)
+                    if signal.is_exit():
+                        trade = self._close_position(current_position, float(candle["close"]),
+                                                       signal.reason, sizer, breaker)
+                        trades.append(trade)
+                        capital += trade["pnl"] - self.cfg.brokerage_per_lot
+                        equity_curve.append(capital)
+                        current_position = None
 
-            # Entry check
-            if not current_position:
+            # Entry check — only for positions that were already flat coming into
+            # this candle (a position closed above cannot be re-entered same-candle,
+            # matching the live orchestrator's one-signal-per-candle behavior).
+            if not current_position and not position_was_open:
                 can, reason = breaker.can_trade()
                 if not can:
                     continue

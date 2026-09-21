@@ -26,6 +26,12 @@ strategy:
   rsi_oversold: 30
   atr_period: 14
   vwap_filter: true
+  # Risk management add-ons (all optional, safe defaults preserve old behavior)
+  breakeven_r: 1.0           # move stop to breakeven once price moves 1R in our favor
+  trail_atr_mult: 1.0        # once breakeven, trail stop by 1x ATR behind price
+  max_holding_candles: 8     # force exit after 8 candles (2 hours on 15-min bars) if still open
+  min_atr_pct: 0.15          # skip entries when ATR/close% is below this (too illiquid/choppy)
+  max_atr_pct: 3.0           # skip entries when ATR/close% is above this (news/event volatility)
 watchlist:
   instruments:
   - exchange: NSE

@@ -129,6 +129,11 @@ def run():
             atr_stop_mult   = risk_cfg["atr_stop_multiplier"],
             atr_target_mult = risk_cfg["atr_target_multiplier"],
             vwap_filter     = strategy_cfg["vwap_filter"],
+            breakeven_r         = strategy_cfg.get("breakeven_r", 1.0),
+            trail_atr_mult      = strategy_cfg.get("trail_atr_mult", 1.0),
+            max_holding_candles = strategy_cfg.get("max_holding_candles", 0),
+            min_atr_pct         = strategy_cfg.get("min_atr_pct", 0.0),
+            max_atr_pct         = strategy_cfg.get("max_atr_pct", 100.0),
         )
         strategies[token] = strat
 

@@ -51,6 +51,11 @@ class ORBEMAVWAPStrategy(StrategyBase):
         candle_minutes       : int   = 15
         min_confidence       : float = 70.0   (override threshold per strategy instance)
         volume_avg_periods   : int   = 20     (periods to compute average volume)
+        breakeven_r          : float = 1.0    (move stop to breakeven after price moves this many R)
+        trail_atr_mult       : float = 1.0    (ATR multiple used to trail stop once breakeven is hit)
+        max_holding_candles  : int   = 0      (force exit after N candles in position; 0 = disabled)
+        min_atr_pct          : float = 0.0    (skip entries if ATR/close % is below this — too illiquid/choppy)
+        max_atr_pct          : float = 100.0  (skip entries if ATR/close % is above this — too volatile/news-risk)
     """
 
     def __init__(self, symbol: str, token: str, **kwargs) -> None:
@@ -71,6 +76,11 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self.min_confidence    = float(p.get("min_confidence",  MIN_CONFIDENCE_THRESHOLD))
         self.vol_avg_periods   = int(p.get("volume_avg_periods", 20))
         self.orb_candles       = max(1, self.orb_minutes // self.candle_minutes)
+        self.breakeven_r       = float(p.get("breakeven_r",        1.0))
+        self.trail_atr_mult    = float(p.get("trail_atr_mult",     1.0))
+        self.max_holding_candles = int(p.get("max_holding_candles", 0))
+        self.min_atr_pct       = float(p.get("min_atr_pct",        0.0))
+        self.max_atr_pct       = float(p.get("max_atr_pct",      100.0))
 
         # Session state
         self._position         = None     # None | "long" | "short"
@@ -79,6 +89,9 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self._target           = 0.0
         self._orb_high         = None
         self._orb_low          = None
+        self._initial_risk     = 0.0      # |entry - initial stop|, used for breakeven trigger
+        self._breakeven_done   = False
+        self._candles_held     = 0
 
     def reset(self) -> None:
         self._position   = None
@@ -87,6 +100,19 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self._target      = 0.0
         self._orb_high    = None
         self._orb_low     = None
+        self._initial_risk   = 0.0
+        self._breakeven_done = False
+        self._candles_held   = 0
+
+    def force_exit(self) -> None:
+        """Sync internal state after an external hard close (SL/target/EOD hit by caller)."""
+        self._position       = None
+        self._entry_price    = 0.0
+        self._stop_loss      = 0.0
+        self._target         = 0.0
+        self._initial_risk   = 0.0
+        self._breakeven_done = False
+        self._candles_held   = 0
 
     # ---------------------------------------------------------------
     # Main candle handler
@@ -129,7 +155,12 @@ class ORBEMAVWAPStrategy(StrategyBase):
 
         # === EXIT checks on existing position ===
         if self._position is not None:
-            return self._check_exits(close, ema_f, ema_s)
+            return self._check_exits(close, ema_f, ema_s, atr_val)
+
+        # === Volatility gate — skip entries on too-illiquid/choppy or too-wild stocks ===
+        atr_pct = (atr_val / close * 100) if close else 0.0
+        if not (self.min_atr_pct <= atr_pct <= self.max_atr_pct):
+            return hold
 
         # === ENTRY checks ===
         vwap_ok_long  = (close > vwap_v) if self.vwap_filter else True
@@ -149,10 +180,13 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 logger.debug(f"[{self.symbol}] LONG setup found but confidence too low: {score:.0f}")
                 return hold
 
-            self._position    = "long"
-            self._entry_price = close
-            self._stop_loss   = sl
-            self._target      = target
+            self._position       = "long"
+            self._entry_price    = close
+            self._stop_loss      = sl
+            self._target         = target
+            self._initial_risk   = abs(close - sl)
+            self._breakeven_done = False
+            self._candles_held   = 0
 
             reason = self._build_reason("LONG", close, ema_f, ema_s, rsi_val, vwap_v,
                                          cur_vol, avg_vol, score)
@@ -178,10 +212,13 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 logger.debug(f"[{self.symbol}] SHORT setup found but confidence too low: {score:.0f}")
                 return hold
 
-            self._position    = "short"
-            self._entry_price = close
-            self._stop_loss   = sl
-            self._target      = target
+            self._position       = "short"
+            self._entry_price    = close
+            self._stop_loss      = sl
+            self._target         = target
+            self._initial_risk   = abs(sl - close)
+            self._breakeven_done = False
+            self._candles_held   = 0
 
             reason = self._build_reason("SHORT", close, ema_f, ema_s, rsi_val, vwap_v,
                                          cur_vol, avg_vol, score)
@@ -199,10 +236,24 @@ class ORBEMAVWAPStrategy(StrategyBase):
     # Exit logic
     # ---------------------------------------------------------------
 
-    def _check_exits(self, close: float, ema_f: float, ema_s: float) -> TradeSignal:
+    def _check_exits(self, close: float, ema_f: float, ema_s: float, atr_val: float) -> TradeSignal:
         hold = TradeSignal(signal=Signal.HOLD, symbol=self.symbol, token=self.token)
+        self._candles_held += 1
 
         if self._position == "long":
+            # Breakeven: once price has moved breakeven_r * initial_risk in our favor,
+            # lock the stop at (or above) entry so a reversal can no longer produce a loss.
+            if not self._breakeven_done and self._initial_risk > 0:
+                if (close - self._entry_price) >= self.breakeven_r * self._initial_risk:
+                    self._stop_loss = max(self._stop_loss, self._entry_price)
+                    self._breakeven_done = True
+                    logger.info(f"[{self.symbol}] Long stop moved to breakeven ₹{self._stop_loss:.2f}")
+            # ATR trailing stop — only ratchets up, never loosens
+            if self._breakeven_done:
+                trail_sl = close - atr_val * self.trail_atr_mult
+                if trail_sl > self._stop_loss:
+                    self._stop_loss = trail_sl
+
             if close <= self._stop_loss:
                 reason = f"Stop hit: ₹{close:.2f} ≤ SL ₹{self._stop_loss:.2f}"
                 self._position = None
@@ -213,6 +264,11 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
                                    token=self.token, entry_price=close, reason=reason)
+            if self.max_holding_candles and self._candles_held >= self.max_holding_candles:
+                reason = f"Max holding period ({self.max_holding_candles} candles) reached — exit long"
+                self._position = None
+                return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
+                                   token=self.token, entry_price=close, reason=reason)
             if ema_f < ema_s:
                 reason = "EMA bearish crossover — exit long"
                 self._position = None
@@ -220,6 +276,16 @@ class ORBEMAVWAPStrategy(StrategyBase):
                                    token=self.token, entry_price=close, reason=reason)
 
         elif self._position == "short":
+            if not self._breakeven_done and self._initial_risk > 0:
+                if (self._entry_price - close) >= self.breakeven_r * self._initial_risk:
+                    self._stop_loss = min(self._stop_loss, self._entry_price)
+                    self._breakeven_done = True
+                    logger.info(f"[{self.symbol}] Short stop moved to breakeven ₹{self._stop_loss:.2f}")
+            if self._breakeven_done:
+                trail_sl = close + atr_val * self.trail_atr_mult
+                if trail_sl < self._stop_loss:
+                    self._stop_loss = trail_sl
+
             if close >= self._stop_loss:
                 reason = f"Stop hit: ₹{close:.2f} ≥ SL ₹{self._stop_loss:.2f}"
                 self._position = None
@@ -227,6 +293,11 @@ class ORBEMAVWAPStrategy(StrategyBase):
                                    token=self.token, entry_price=close, reason=reason)
             if close <= self._target:
                 reason = f"Target hit: ₹{close:.2f} ≤ T ₹{self._target:.2f}"
+                self._position = None
+                return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
+                                   token=self.token, entry_price=close, reason=reason)
+            if self.max_holding_candles and self._candles_held >= self.max_holding_candles:
+                reason = f"Max holding period ({self.max_holding_candles} candles) reached — exit short"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
                                    token=self.token, entry_price=close, reason=reason)

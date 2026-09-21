@@ -125,5 +125,16 @@ class StrategyBase(ABC):
         """Reset internal state (called at start of each trading session)."""
         pass
 
+    def force_exit(self) -> None:
+        """
+        Externally force-close any tracked position without emitting a signal.
+
+        Called by the backtest engine (and can be called live) after a hard
+        stop/target/EOD close is executed outside the strategy's own
+        on_candle_close() path, so the strategy's internal position state
+        stays in sync with the caller's. Default: no-op (stateless strategies).
+        """
+        pass
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(symbol={self.symbol})"
