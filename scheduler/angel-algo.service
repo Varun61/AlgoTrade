@@ -1,0 +1,18 @@
+[Unit]
+Description=Angel One SmartAPI Algo Trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/angel-algo
+ExecStart=/home/ubuntu/angel-algo/scheduler/daily_runner.sh
+Restart=no
+StandardOutput=journal
+StandardError=journal
+# Environment (alternatively use EnvironmentFile=)
+# EnvironmentFile=/home/ubuntu/angel-algo/config/secrets.env
+
+[Install]
+WantedBy=multi-user.target
