@@ -40,7 +40,30 @@ INTERVAL_MAP = {
 def _load_rate_delay() -> float:
     with open(_SETTINGS_PATH) as f:
         cfg = yaml.safe_load(f)
-    return float(cfg["data"].get("historical_rate_limit_delay", 0.5))
+    return float(cfg["data"].get("historical_rate_limit_delay", 1.0))
+
+
+# Substrings Angel One returns when the historical-data rate limit is hit.
+_RATE_LIMIT_MARKERS = (
+    "access denied because of exceeding access rate",
+    "exceeding access rate",
+    "access rate",
+)
+
+
+def _is_rate_limited(resp) -> bool:
+    if not resp:
+        return False
+    msg = str(resp.get("message", "")).lower()
+    errorcode = str(resp.get("errorcode", "")).lower()
+    return any(marker in msg for marker in _RATE_LIMIT_MARKERS) or errorcode == "ab1004"
+
+
+def _is_rate_limited_text(text: str) -> bool:
+    # SmartAPI returns a raw (non-JSON) body on rate limit, which surfaces as a
+    # JSON-parse exception rather than a structured resp dict — check the text too.
+    text = text.lower()
+    return any(marker in text for marker in _RATE_LIMIT_MARKERS)
 
 
 class HistoricalFetcher:
@@ -62,7 +85,7 @@ class HistoricalFetcher:
         interval_minutes: int | str,
         from_date: datetime,
         to_date: datetime,
-        retries: int = 3,
+        retries: int = 5,
     ) -> pd.DataFrame:
         """
         Fetch OHLCV candles for a symbol.
@@ -86,9 +109,9 @@ class HistoricalFetcher:
             try:
                 logger.debug(f"[HistoricalFetcher] Fetching {symbol_token} {interval_str} ...")
                 resp = self.obj.getCandleData(params)
-                time.sleep(self._delay)   # Respect rate limit
 
                 if resp and resp.get("status") and resp["data"]:
+                    time.sleep(self._delay)   # Respect rate limit before next call
                     df = pd.DataFrame(
                         resp["data"],
                         columns=["timestamp", "open", "high", "low", "close", "volume"]
@@ -100,12 +123,30 @@ class HistoricalFetcher:
                     logger.info(f"[HistoricalFetcher] Got {len(df)} candles for token {symbol_token}")
                     return df
 
+                if _is_rate_limited(resp):
+                    backoff = max(self._delay, 1.0) * (2 ** attempt)
+                    logger.warning(
+                        f"[HistoricalFetcher] Rate limited on attempt {attempt} for {symbol_token}, "
+                        f"backing off {backoff:.1f}s: {resp}"
+                    )
+                    time.sleep(backoff)
+                    continue
+
                 logger.warning(f"[HistoricalFetcher] Empty/bad response attempt {attempt}: {resp}")
 
             except Exception as exc:
+                if _is_rate_limited_text(str(exc)):
+                    backoff = max(self._delay, 1.0) * (2 ** attempt)
+                    logger.warning(
+                        f"[HistoricalFetcher] Rate limited (exception) on attempt {attempt} for "
+                        f"{symbol_token}, backing off {backoff:.1f}s: {exc}"
+                    )
+                    time.sleep(backoff)
+                    continue
+
                 logger.warning(f"[HistoricalFetcher] Attempt {attempt} exception: {exc}")
 
-            time.sleep(2 ** attempt)
+            time.sleep(max(self._delay, 2 ** attempt))
 
         logger.error(f"[HistoricalFetcher] Failed after {retries} attempts for {symbol_token}")
         return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])

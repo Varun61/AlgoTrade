@@ -36,4 +36,8 @@ pytz>=2024.1
 # Dev / test
 pytest>=8.0.0
 
+# tools/evaluate_pnl.py — fetches real historical candles to estimate P&L
+# for trades that never got a logged exit alert
+yfinance>=0.2.40
+
 

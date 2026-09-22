@@ -61,6 +61,36 @@ def build_ws_token_list(watchlist: list[dict]) -> list[dict]:
     return [{"exchangeType": seg, "tokens": toks} for seg, toks in groups.items()]
 
 
+def retry_failed_warmups(
+    watchlist: list[dict],
+    histories: dict,
+    fetcher,
+    interval_min: int,
+    warmup_days: int,
+    cooldown_secs: float = 5.0,
+) -> list[str]:
+    """
+    Retry warm-up fetch for any symbol whose history came back empty.
+    Mutates `histories` in place. Returns symbols still empty after the retry.
+    """
+    failed = [inst for inst in watchlist if histories[str(inst["token"])].empty]
+    if failed:
+        logger.warning(f"Retrying warm-up for {len(failed)} symbol(s) that failed the first pass: "
+                        f"{[inst['symbol'] for inst in failed]}")
+        time.sleep(cooldown_secs)
+        for inst in failed:
+            token  = str(inst["token"])
+            symbol = inst["symbol"]
+            exch   = inst["exchange"]
+            logger.info(f"Retry warm-up for {symbol} ...")
+            warmup = fetcher.fetch_warmup(exch, token, interval_min, lookback_days=warmup_days)
+            histories[token] = warmup
+            if warmup.empty:
+                logger.error(f"[Warmup] {symbol} ({token}) still has no history after retry pass.")
+
+    return [inst["symbol"] for inst in watchlist if histories[str(inst["token"])].empty]
+
+
 def run():
     cfg         = load_settings()
     trading_cfg = cfg["trading"]
@@ -161,6 +191,13 @@ def run():
         logger.info(f"Fetching warm-up for {symbol} ...")
         warmup = fetcher.fetch_warmup(exch, token, interval_min, lookback_days=warmup_days)
         histories[token] = warmup
+
+    # Second pass: retry any symbols that came back empty (usually rate-limit
+    # stragglers) now that request pressure from the first pass has cooled down.
+    still_failed = retry_failed_warmups(watchlist, histories, fetcher, interval_min, warmup_days)
+    if still_failed:
+        algo_logger.log_system(f"Warm-up failed for: {', '.join(still_failed)}")
+        alerter.send_system(f"⚠️ Warm-up failed for {len(still_failed)} symbol(s): {', '.join(still_failed)}")
 
     # ------------------------------------------------------------------
     # 4. WebSocket feed

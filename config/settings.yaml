@@ -451,7 +451,7 @@ watchlist:
 data:
   instrument_master_url: https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json
   historical_max_days: 365
-  historical_rate_limit_delay: 0.5
+  historical_rate_limit_delay: 1.0
   warmup_lookback_days: 30
 monitoring:
   log_dir: logs

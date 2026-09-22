@@ -17,10 +17,11 @@ Falls back to console logging if not configured.
 """
 
 from __future__ import annotations
-import logging, os, asyncio
+import json, logging, os, asyncio
 from datetime import datetime
 from pathlib import Path
 
+import yaml
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / "config" / "secrets.env")
@@ -31,6 +32,26 @@ _BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 _CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 _bot = None
+
+_SETTINGS_PATH = Path(__file__).parent.parent / "config" / "settings.yaml"
+
+
+def _alerts_log_path() -> Path:
+    with open(_SETTINGS_PATH) as f:
+        cfg = yaml.safe_load(f)
+    log_dir = Path(cfg["monitoring"]["log_dir"])
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "alerts.jsonl"
+
+
+def _log_alert(record: dict) -> None:
+    """Append a structured alert record so P&L can be reconstructed later (see tools/evaluate_pnl.py)."""
+    record = {"timestamp": datetime.now().isoformat(), **record}
+    try:
+        with open(_alerts_log_path(), "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as exc:
+        logger.error(f"[Alerts] Failed to write alert log: {exc}")
 
 
 async def _send_async(message: str) -> None:
@@ -97,6 +118,16 @@ class TelegramAlerter:
             f"{factors_txt}"
         )
         _send_sync(msg)
+        _log_alert({
+            "event"      : "ENTRY",
+            "symbol"     : symbol,
+            "direction"  : action,
+            "entry_price": entry,
+            "stop_loss"  : sl,
+            "target"     : target,
+            "rr_ratio"   : trade_signal.rr_ratio,
+            "confidence" : trade_signal.confidence,
+        })
 
     def send_exit_alert(self, symbol: str, direction: str, exit_price: float,
                          entry_price: float, reason: str, pnl: float | None = None) -> None:
@@ -114,6 +145,15 @@ class TelegramAlerter:
             f"{pnl_txt}"
         )
         _send_sync(msg)
+        _log_alert({
+            "event"      : "EXIT",
+            "symbol"     : symbol,
+            "direction"  : direction,
+            "entry_price": entry_price,
+            "exit_price" : exit_price,
+            "reason"     : reason,
+            "pnl"        : pnl,
+        })
 
     def send_no_setup_found(self, watchlist_symbols: list[str]) -> None:
         _send_sync("📭 No Setup Found Today")
