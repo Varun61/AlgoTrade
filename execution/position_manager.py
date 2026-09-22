@@ -49,6 +49,7 @@ class PositionManager:
         stop_loss   : float,
         target      : float,
         order_id    : str,
+        is_bracket  : bool = False,
     ) -> None:
         if token in self._positions:
             logger.warning(f"[PositionMgr] Already have position in {symbol} — skipping open.")
@@ -65,6 +66,7 @@ class PositionManager:
             "entry_order_id" : order_id,
             "exit_order_id"  : None,
             "realized_pnl"   : 0.0,
+            "is_bracket"     : is_bracket,   # SL/target enforced broker-side (ROBO/BO)
         }
         logger.info(f"[PositionMgr] Opened {direction.upper()} {qty}x{symbol} @ ₹{entry_price:.2f} "
                     f"| SL={stop_loss:.2f} | T={target:.2f}")

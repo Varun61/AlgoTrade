@@ -17,10 +17,10 @@ trading:
   # outside market hours. Set back to false for normal sessions.
   allow_after_hours: false
   # Broker-side bracket orders (Angel One ROBO/BO) so SL/target are enforced
-  # on the exchange, not just by our own polling loop. NOT wired into main.py
-  # yet — OrderManager.place_bracket_order() exists but must be verified with
-  # a single small live order before enabling this and using it in the loop.
-  use_bracket_order: false
+  # on the exchange, not just by our own polling loop. ON in this branch —
+  # verify squareoff/stoploss units (points vs price) with a single small
+  # live order before trusting this with real capital.
+  use_bracket_order: true
 risk:
   per_trade_risk_pct: 1.0
   daily_loss_limit_pct: 2.0

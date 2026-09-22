@@ -137,6 +137,7 @@ def run():
     # With it off, order_mgr/position_mgr/sizer/breaker are never touched —
     # the loop below behaves exactly as it always has (alerts only).
     auto_execute = bool(trading_cfg.get("auto_execute", False))
+    use_bracket_order = bool(trading_cfg.get("use_bracket_order", False))
     order_mgr    = OrderManager(smart_obj=obj) if auto_execute else None
     position_mgr = PositionManager() if auto_execute else None
     sizer        = PositionSizer(capital=capital, per_trade_risk_pct=risk_cfg["per_trade_risk_pct"]) if auto_execute else None
@@ -148,7 +149,8 @@ def run():
         max_consecutive_losses=risk_cfg["max_consecutive_losses"],
     ) if auto_execute else None
     token_exchange = {str(inst["token"]): inst["exchange"] for inst in watchlist}
-    logger.info(f"Auto-execute: {'ENABLED — orders will be placed (' + mode.upper() + ' mode)' if auto_execute else 'disabled — alerts only'}")
+    logger.info(f"Auto-execute: {'ENABLED — orders will be placed (' + mode.upper() + ' mode)' if auto_execute else 'disabled — alerts only'}"
+                + (" | Bracket orders (ROBO/BO): ON" if auto_execute and use_bracket_order else ""))
 
     # ------------------------------------------------------------------
     # 2. Instrument master
@@ -244,12 +246,32 @@ def run():
         pnl = None
         if auto_execute and position_mgr.has_position(token):
             pos = position_mgr.get_position(token)
+            is_bracket = pos.get("is_bracket", False)
+            is_sl_or_target = reason.startswith("Stop hit") or reason.startswith("Target hit")
             exit_txn = "SELL" if pos["direction"] == "long" else "BUY"
-            exit_order_id = order_mgr.place_order(
-                symbol=pos["symbol"], token=token,
-                exchange=token_exchange.get(token, "NSE"),
-                transaction=exit_txn, qty=pos["qty"], order_type="MARKET",
-            )
+
+            if is_bracket and is_sl_or_target:
+                # Broker's ROBO SL/target leg already closed this position on the
+                # exchange — nothing to place here, just record it locally.
+                # NOT YET VERIFIED live: assumes the broker leg fires at/near our
+                # own SL/target price. Reconcile against the order book before trusting this.
+                exit_order_id = pos["entry_order_id"]
+            elif is_bracket:
+                # Exiting for a reason the broker doesn't know about (early-cut,
+                # max-holding, EMA-crossover, EOD square-off) — cancel the resting
+                # ROBO legs first, then flatten manually.
+                order_mgr.cancel_order(pos["entry_order_id"], variety="ROBO")
+                exit_order_id = order_mgr.place_order(
+                    symbol=pos["symbol"], token=token,
+                    exchange=token_exchange.get(token, "NSE"),
+                    transaction=exit_txn, qty=pos["qty"], order_type="MARKET",
+                )
+            else:
+                exit_order_id = order_mgr.place_order(
+                    symbol=pos["symbol"], token=token,
+                    exchange=token_exchange.get(token, "NSE"),
+                    transaction=exit_txn, qty=pos["qty"], order_type="MARKET",
+                )
             pnl = position_mgr.close_position(token, exit_price, exit_order_id or "")
             breaker.on_trade_close(pnl)
             alerter.send_order_closed(exit_order_id or "?", symbol, exit_price, pnl)
@@ -292,6 +314,10 @@ def run():
                     for pos in position_mgr.get_all_positions():
                         ltp = current_ltps.get(pos["token"], pos["entry_price"])
                         exit_txn = "SELL" if pos["direction"] == "long" else "BUY"
+                        if pos.get("is_bracket", False):
+                            # EOD square-off is a reason the broker's ROBO legs don't
+                            # know about — cancel them first, then flatten manually.
+                            order_mgr.cancel_order(pos["entry_order_id"], variety="ROBO")
                         exit_order_id = order_mgr.place_order(
                             symbol=pos["symbol"], token=pos["token"],
                             exchange=token_exchange.get(pos["token"], "NSE"),
@@ -346,18 +372,27 @@ def run():
                             continue
 
                         txn = "BUY" if top_signal.signal == Signal.BUY else "SELL"
-                        order_id = order_mgr.place_order(
-                            symbol=top_signal.symbol, token=top_signal.token,
-                            exchange=token_exchange.get(top_signal.token, "NSE"),
-                            transaction=txn, qty=qty, order_type="MARKET",
-                        )
+                        if use_bracket_order:
+                            order_id = order_mgr.place_bracket_order(
+                                symbol=top_signal.symbol, token=top_signal.token,
+                                exchange=token_exchange.get(top_signal.token, "NSE"),
+                                transaction=txn, qty=qty,
+                                entry_price=top_signal.entry_price,
+                                stop_loss=top_signal.stop_loss, target=top_signal.target,
+                            )
+                        else:
+                            order_id = order_mgr.place_order(
+                                symbol=top_signal.symbol, token=top_signal.token,
+                                exchange=token_exchange.get(top_signal.token, "NSE"),
+                                transaction=txn, qty=qty, order_type="MARKET",
+                            )
                         if order_id:
                             position_mgr.open_position(
                                 symbol=top_signal.symbol, token=top_signal.token,
                                 direction="long" if txn == "BUY" else "short",
                                 qty=qty, entry_price=top_signal.entry_price,
                                 stop_loss=top_signal.stop_loss, target=top_signal.target,
-                                order_id=order_id,
+                                order_id=order_id, is_bracket=use_bracket_order,
                             )
                             breaker.on_trade_open()
                             alerter.send_order_placed(order_id, top_signal, qty)
