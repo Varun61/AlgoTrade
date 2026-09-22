@@ -64,7 +64,7 @@ class TradeRecord:
     pnl_source: str = ""        # "reported" | "estimated_from_exit_alert" | "estimated_from_market_data" | "open"
 
 
-def _load_alerts(path: Path) -> list[dict]:
+def _load_alerts(path: Path, on_date: str | None = None) -> list[dict]:
     if not path.exists():
         raise FileNotFoundError(f"Alert log not found: {path}")
     records = []
@@ -72,7 +72,10 @@ def _load_alerts(path: Path) -> list[dict]:
         for line in f:
             line = line.strip()
             if line:
-                records.append(json.loads(line))
+                rec = json.loads(line)
+                if on_date and not rec["timestamp"].startswith(on_date):
+                    continue
+                records.append(rec)
     return records
 
 
@@ -207,9 +210,15 @@ def main() -> None:
     parser.add_argument("--capital", type=float, default=cfg["trading"]["capital"])
     parser.add_argument("--risk-pct", type=float, default=cfg["risk"]["per_trade_risk_pct"])
     parser.add_argument("--no-fetch", action="store_true", help="Don't fetch market data for trades with no logged exit.")
+    parser.add_argument("--date", type=str, default=None,
+                        help="Only evaluate alerts from this date (YYYY-MM-DD). Defaults to today; use --all to disable.")
+    parser.add_argument("--all", action="store_true", help="Evaluate the entire log, ignoring --date (default: today only).")
     args = parser.parse_args()
 
-    records = _load_alerts(args.file)
+    on_date = None if args.all else (args.date or datetime.now().strftime("%Y-%m-%d"))
+    records = _load_alerts(args.file, on_date)
+    if on_date:
+        print(f"(Filtered to {on_date} — pass --all to evaluate the full log, or --date YYYY-MM-DD for another day)\n")
     trades  = _pair_trades(records)
     sizer   = PositionSizer(capital=args.capital, per_trade_risk_pct=args.risk_pct)
     square_off_time = cfg["trading"]["square_off_time"]

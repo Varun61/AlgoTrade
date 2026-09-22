@@ -34,7 +34,7 @@ There's a consistency gap: 3 concurrent × 0.5% risk each = 1.5% worst-case same
 ## Phases
 
 ### Phase 1 — Paper-mode validation
-1. Flip `trading.auto_execute: true`, `trading.mode: paper` in config/settings.yaml, capital set to the eventual live target (₹25,000 — see Phase 2) so sizing math matches reality. Set `max_concurrent_positions: 2` to match the pilot risk budget above.
+1. Flip `trading.auto_execute: true`, `trading.mode: paper` in config/settings.yaml, capital set to the eventual live target (₹25,000 — see Phase 2) so sizing math matches reality. **Applied**: `max_concurrent_positions` kept at **3** per explicit user decision (not lowered to 2) — the existing `daily_loss_limit_pct` circuit breaker still caps worst-case same-day loss regardless of how many positions are technically allowed open.
 2. Run unattended for 3-4 weeks (~15-20 trading days).
 3. Daily reconciliation via the already-built `tools/evaluate_pnl.py` (parses monitoring/alerts.py logged alerts) against likely real fills from historical data.
 4. Exit criteria: circuit breaker verified to trip at least once, zero unhandled exceptions, paper P&L directionally consistent with backtest.
@@ -57,6 +57,12 @@ There's a consistency gap: 3 concurrent × 0.5% risk each = 1.5% worst-case same
 3. Daily reconciliation via `tools/evaluate_pnl.py` against SmartAPI's actual order/trade book.
 4. Confirm existing alerts (circuit break, order placed/failed/closed, session start/stop, errors) fire correctly during the pilot.
 5. After a stable pilot window, gradually raise capital / risk_pct / max_concurrent_positions together, keeping the worst-case-simultaneous-loss math consistent with the daily-loss cap.
+
+## Strategy backlog / future exploration
+- **VWAP Mean Reversion** (candidate, not built): fade price back toward VWAP when it's extended by k std-dev — same equity universe, same risk engine (`risk/position_sizer.py`, `risk/circuit_breaker.py`) as ORB, just a new strategy class alongside `ORBEMAVWAPStrategy` in `strategy/signal_engine.py`. VWAP is already computed in `strategy/indicators.py`, currently only used as an ORB directional filter, not its own entry signal. To be prototyped/backtested only *after* the ORB pilot shows positive expectancy.
+- **09:20 AM Short Straddle**: rejected for now — requires options (ATM Call+Put), a different instrument type than the current equity-only stack (`data/instrument_master.py`, `execution/order_manager.py`), has theoretically unbounded risk on the short strikes, and there's no options-Greeks/margin risk model in `risk/` to support it.
+- **Scalping / Momentum Grid**: rejected for now — needs tick-level/sub-second execution; current loop runs on 15-min candles with a 3-second signal buffer, and Angel One's per-trade brokerage would likely erase the edge on rapid micro-trades.
+- Applied today as part of Phase 1 tuning (already live in code/config, not yet re-validated with fresh paper data): `atr_target_multiplier` 2.5→3.0 (wider R:R), `max_holding_candles` 8→12, plus a new cascading early-exit (`early_cut_candles: 5`, `early_cut_min_r: 0.3` in `strategy/signal_engine.py`) that cuts stalled trades early instead of waiting out the full holding window, based on real alert data showing most exits were time-stops that cut winners short.
 
 ## Relevant files
 - `config/settings.yaml` — capital, risk_pct, daily_loss_limit_pct, max_concurrent_positions knobs

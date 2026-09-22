@@ -54,6 +54,8 @@ class ORBEMAVWAPStrategy(StrategyBase):
         breakeven_r          : float = 1.0    (move stop to breakeven after price moves this many R)
         trail_atr_mult       : float = 1.0    (ATR multiple used to trail stop once breakeven is hit)
         max_holding_candles  : int   = 0      (force exit after N candles in position; 0 = disabled)
+        early_cut_candles    : int   = 0      (cut a stalled trade after N candles if still below early_cut_min_r; 0 = disabled)
+        early_cut_min_r      : float = 0.3    (R-multiple threshold below which a trade is considered "stalled")
         min_atr_pct          : float = 0.0    (skip entries if ATR/close % is below this — too illiquid/choppy)
         max_atr_pct          : float = 100.0  (skip entries if ATR/close % is above this — too volatile/news-risk)
     """
@@ -79,6 +81,8 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self.breakeven_r       = float(p.get("breakeven_r",        1.0))
         self.trail_atr_mult    = float(p.get("trail_atr_mult",     1.0))
         self.max_holding_candles = int(p.get("max_holding_candles", 0))
+        self.early_cut_candles = int(p.get("early_cut_candles", 0))    # 0 = disabled
+        self.early_cut_min_r   = float(p.get("early_cut_min_r",  0.3))
         self.min_atr_pct       = float(p.get("min_atr_pct",        0.0))
         self.max_atr_pct       = float(p.get("max_atr_pct",      100.0))
 
@@ -252,6 +256,18 @@ class ORBEMAVWAPStrategy(StrategyBase):
                     self._stop_loss = max(self._stop_loss, self._entry_price)
                     self._breakeven_done = True
                     logger.info(f"[{self.symbol}] Long stop moved to breakeven ₹{self._stop_loss:.2f}")
+
+            # Cascading early exit: if the trade is still stalled (below early_cut_min_r)
+            # after early_cut_candles, cut it now instead of waiting for max_holding_candles —
+            # frees capital/fees for a live setup and stops eating the wider target's time budget.
+            if (self.early_cut_candles and not self._breakeven_done
+                    and self._candles_held >= self.early_cut_candles and self._initial_risk > 0):
+                current_r = (close - self._entry_price) / self._initial_risk
+                if current_r < self.early_cut_min_r:
+                    reason = f"Stalled ({self._candles_held} candles, {current_r:.2f}R) — cut early"
+                    self._position = None
+                    return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
+                                       token=self.token, entry_price=self._entry_price, reason=reason)
             # ATR trailing stop — only ratchets up, never loosens
             if self._breakeven_done:
                 trail_sl = close - atr_val * self.trail_atr_mult
@@ -262,22 +278,22 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 reason = f"Stop hit: ₹{close:.2f} ≤ SL ₹{self._stop_loss:.2f}"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
-                                   token=self.token, entry_price=close, reason=reason)
+                                   token=self.token, entry_price=self._entry_price, reason=reason)
             if close >= self._target:
                 reason = f"Target hit: ₹{close:.2f} ≥ T ₹{self._target:.2f}"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
-                                   token=self.token, entry_price=close, reason=reason)
+                                   token=self.token, entry_price=self._entry_price, reason=reason)
             if self.max_holding_candles and self._candles_held >= self.max_holding_candles:
                 reason = f"Max holding period ({self.max_holding_candles} candles) reached — exit long"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
-                                   token=self.token, entry_price=close, reason=reason)
+                                   token=self.token, entry_price=self._entry_price, reason=reason)
             if ema_f < ema_s:
                 reason = "EMA bearish crossover — exit long"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
-                                   token=self.token, entry_price=close, reason=reason)
+                                   token=self.token, entry_price=self._entry_price, reason=reason)
 
         elif self._position == "short":
             if not self._breakeven_done and self._initial_risk > 0:
@@ -285,6 +301,15 @@ class ORBEMAVWAPStrategy(StrategyBase):
                     self._stop_loss = min(self._stop_loss, self._entry_price)
                     self._breakeven_done = True
                     logger.info(f"[{self.symbol}] Short stop moved to breakeven ₹{self._stop_loss:.2f}")
+
+            if (self.early_cut_candles and not self._breakeven_done
+                    and self._candles_held >= self.early_cut_candles and self._initial_risk > 0):
+                current_r = (self._entry_price - close) / self._initial_risk
+                if current_r < self.early_cut_min_r:
+                    reason = f"Stalled ({self._candles_held} candles, {current_r:.2f}R) — cut early"
+                    self._position = None
+                    return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
+                                       token=self.token, entry_price=self._entry_price, reason=reason)
             if self._breakeven_done:
                 trail_sl = close + atr_val * self.trail_atr_mult
                 if trail_sl < self._stop_loss:
@@ -294,22 +319,22 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 reason = f"Stop hit: ₹{close:.2f} ≥ SL ₹{self._stop_loss:.2f}"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
-                                   token=self.token, entry_price=close, reason=reason)
+                                   token=self.token, entry_price=self._entry_price, reason=reason)
             if close <= self._target:
                 reason = f"Target hit: ₹{close:.2f} ≤ T ₹{self._target:.2f}"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
-                                   token=self.token, entry_price=close, reason=reason)
+                                   token=self.token, entry_price=self._entry_price, reason=reason)
             if self.max_holding_candles and self._candles_held >= self.max_holding_candles:
                 reason = f"Max holding period ({self.max_holding_candles} candles) reached — exit short"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
-                                   token=self.token, entry_price=close, reason=reason)
+                                   token=self.token, entry_price=self._entry_price, reason=reason)
             if ema_f > ema_s:
                 reason = "EMA bullish crossover — exit short"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
-                                   token=self.token, entry_price=close, reason=reason)
+                                   token=self.token, entry_price=self._entry_price, reason=reason)
 
         return hold
 
@@ -372,7 +397,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
         else:
             factors["rr_ratio"] = 0.0  # Bad R:R — never alert
 
-        total = sum(factors.values())
+        total = min(100.0, sum(factors.values()))
         return total, factors
 
     def _score_short(self, close, ema_f, ema_s, rsi_val, vwap_v,
@@ -430,7 +455,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
         else:
             factors["rr_ratio"] = 0.0
 
-        total = sum(factors.values())
+        total = min(100.0, sum(factors.values()))
         return total, factors
 
     # ---------------------------------------------------------------

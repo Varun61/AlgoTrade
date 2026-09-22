@@ -35,6 +35,14 @@ _bot = None
 
 _SETTINGS_PATH = Path(__file__).parent.parent / "config" / "settings.yaml"
 
+_DIVIDER = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+
+
+def _bar(score: float, max_score: float, length: int = 10) -> str:
+    """Render a filled/empty block bar, e.g. ▰▰▰▰▰▰▰▱▱▱ for 7/10."""
+    filled = round(max(0.0, min(1.0, score / max_score)) * length)
+    return "▰" * filled + "▱" * (length - filled)
+
 
 def _alerts_log_path() -> Path:
     with open(_SETTINGS_PATH) as f:
@@ -94,27 +102,36 @@ class TelegramAlerter:
         from strategy.strategy_base import Signal
 
         action = "BUY" if trade_signal.signal == Signal.BUY else "SELL"
+        dir_emoji = "📈" if action == "BUY" else "📉"
         symbol = trade_signal.symbol
         entry  = trade_signal.entry_price
         sl     = trade_signal.stop_loss
         target = trade_signal.target
         risk   = abs(entry - sl)
         reward = abs(target - entry)
+        conf   = trade_signal.confidence
+
+        levels = (
+            f"🎯 Entry   ₹{entry:>10.2f}\n"
+            f"🛑 SL      ₹{sl:>10.2f}   (-₹{risk:.2f})\n"
+            f"🏁 Target  ₹{target:>10.2f}   (+₹{reward:.2f})\n"
+            f"⚖️ R:R      {trade_signal.rr_ratio:>7.2f}"
+        )
 
         factors_txt = ""
         if trade_signal.confidence_factors:
-            factors_txt = "\n" + "\n".join(
-                f"  • {name.replace('_', ' ').title()}: {score:.0f}/20"
+            factor_rows = "\n".join(
+                f"{name.replace('_', ' ').title():<15}{_bar(score, 20, 8)} {score:>4.0f}/20"
                 for name, score in trade_signal.confidence_factors.items()
             )
+            factors_txt = f"\n\n<code>{factor_rows}</code>"
 
         msg = (
-            f"⚡ <b>{action} {symbol}</b>\n"
-            f"Entry: ₹{entry:.2f}\n"
-            f"SL: ₹{sl:.2f} (₹{risk:.2f} risk)\n"
-            f"Target: ₹{target:.2f} (₹{reward:.2f} reward)\n"
-            f"R:R: {trade_signal.rr_ratio:.2f}\n"
-            f"Confidence: {trade_signal.confidence:.0f}/100 {trade_signal.confidence_label()}"
+            f"{dir_emoji} <b>{action} {symbol}</b>\n"
+            f"{_DIVIDER}\n"
+            f"<code>{levels}</code>\n\n"
+            f"{trade_signal.confidence_label()}  <b>{conf:.0f}/100</b>\n"
+            f"{_bar(conf, 100, 14)}"
             f"{factors_txt}"
         )
         _send_sync(msg)
@@ -135,13 +152,15 @@ class TelegramAlerter:
         Exit alert — tells you to close your position.
         """
         action  = "SELL" if "long" in direction.lower() else "BUY TO COVER"
-        pnl_txt = f"\nP&L: ₹{pnl:+,.2f}" if pnl is not None else ""
+        is_win  = pnl is not None and pnl >= 0
+        emoji   = "🟢" if pnl is None else ("✅" if is_win else "❌")
+        pnl_txt = f"\n\n<b>P&L: ₹{pnl:+,.2f}</b>" if pnl is not None else ""
         msg = (
-            f"🚨 <b>EXIT {symbol}</b>\n"
-            f"Action: {action}\n"
-            f"Entry: ₹{entry_price:.2f}\n"
-            f"Exit Price: ₹{exit_price:.2f}\n"
-            f"Reason: {reason}"
+            f"{emoji} <b>EXIT {symbol}</b> — {action}\n"
+            f"{_DIVIDER}\n"
+            f"<code>Entry  ₹{entry_price:>10.2f}\n"
+            f"Exit   ₹{exit_price:>10.2f}</code>\n\n"
+            f"📝 {reason}"
             f"{pnl_txt}"
         )
         _send_sync(msg)
@@ -156,27 +175,35 @@ class TelegramAlerter:
         })
 
     def send_no_setup_found(self, watchlist_symbols: list[str]) -> None:
-        _send_sync("📭 No Setup Found Today")
+        _send_sync("📭 <b>No Setup Found Today</b>")
 
     # ---------------------------------------------------------------
     # System alerts
     # ---------------------------------------------------------------
 
     def send_circuit_break(self, reason: str) -> None:
-        _send_sync(f"🛑 CIRCUIT BREAKER: {reason}")
+        _send_sync(f"🛑 <b>CIRCUIT BREAKER TRIPPED</b>\n{_DIVIDER}\n{reason}")
 
     def send_daily_summary(self, summary: dict, capital_start: float) -> None:
         pnl = summary.get("realized_pnl", 0)
-        _send_sync(f"💰 Daily P&L: ₹{pnl:+,.2f}")
+        emoji = "💰" if pnl >= 0 else "📉"
+        pct = (pnl / capital_start * 100) if capital_start else 0.0
+        _send_sync(
+            f"{emoji} <b>Daily P&L</b>\n{_DIVIDER}\n"
+            f"<code>₹{pnl:+,.2f}  ({pct:+.2f}%)</code>"
+        )
 
     def send_session_start(self, mode: str, symbols: list[str], capital: float) -> None:
-        _send_sync("🤖 ALGO STARTED")
+        _send_sync(
+            f"🟢 <b>ALGO STARTED</b>\n{_DIVIDER}\n"
+            f"Mode: <b>{mode.upper()}</b> | Capital: ₹{capital:,.0f} | Watchlist: {len(symbols)} symbols"
+        )
 
     def send_session_end(self) -> None:
-        _send_sync("🔴 ALGO STOPPED")
+        _send_sync("🔴 <b>ALGO STOPPED</b>")
 
     def send_error(self, message: str) -> None:
-        _send_sync(f"⚠️ <b>SYSTEM ERROR</b>\n{message}")
+        _send_sync(f"⚠️ <b>SYSTEM ERROR</b>\n{_DIVIDER}\n{message}")
 
     def send_system(self, message: str) -> None:
         _send_sync(f"🤖 {message}")
@@ -191,21 +218,28 @@ class TelegramAlerter:
         from strategy.strategy_base import Signal
         action = "BUY" if trade_signal.signal == Signal.BUY else "SELL"
         msg = (
-            f"✅ <b>ORDER PLACED</b> {action} {qty}x{trade_signal.symbol}\n"
-            f"Entry: ₹{trade_signal.entry_price:.2f} | SL: ₹{trade_signal.stop_loss:.2f} "
-            f"| Target: ₹{trade_signal.target:.2f}\n"
-            f"Order ID: {order_id}"
+            f"✅ <b>ORDER PLACED</b> — {action} {qty}x{trade_signal.symbol}\n"
+            f"{_DIVIDER}\n"
+            f"<code>Entry   ₹{trade_signal.entry_price:>10.2f}\n"
+            f"SL      ₹{trade_signal.stop_loss:>10.2f}\n"
+            f"Target  ₹{trade_signal.target:>10.2f}</code>\n\n"
+            f"Order ID: <code>{order_id}</code>"
         )
         _send_sync(msg)
 
     def send_order_failed(self, symbol: str, reason: str) -> None:
-        _send_sync(f"❌ <b>ORDER FAILED</b> {symbol}\nReason: {reason}")
+        _send_sync(f"❌ <b>ORDER FAILED</b> — {symbol}\n{_DIVIDER}\n{reason}")
+
+    def send_order_skipped(self, symbol: str, reason: str) -> None:
+        _send_sync(f"⏭️ <b>NOT EXECUTED</b> — {symbol}\n{_DIVIDER}\nAlerted but no order was placed.\nReason: {reason}")
 
     def send_order_closed(self, order_id: str, symbol: str, exit_price: float, pnl: float) -> None:
         emoji = "✅" if pnl >= 0 else "❌"
         msg = (
-            f"{emoji} <b>ORDER CLOSED</b> {symbol}\n"
-            f"Exit: ₹{exit_price:.2f} | P&L: ₹{pnl:+,.2f}\n"
-            f"Order ID: {order_id}"
+            f"{emoji} <b>ORDER CLOSED</b> — {symbol}\n"
+            f"{_DIVIDER}\n"
+            f"<code>Exit   ₹{exit_price:>10.2f}\n"
+            f"P&L    ₹{pnl:>+10,.2f}</code>\n\n"
+            f"Order ID: <code>{order_id}</code>"
         )
         _send_sync(msg)

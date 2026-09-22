@@ -1,6 +1,6 @@
 trading:
   mode: paper
-  capital: 100000
+  capital: 25000
   max_concurrent_positions: 3
   max_trades_per_day: 10
   candle_interval_minutes: 15
@@ -12,7 +12,7 @@ trading:
   # Flip to true only after you've validated alert quality over live paper/
   # real sessions. Even when true, trading.mode still governs paper vs. live
   # fills inside OrderManager.
-  auto_execute: false
+  auto_execute: true
   # TEMP: keep the live feed running after square-off so we can debug WebSocket
   # outside market hours. Set back to false for normal sessions.
   allow_after_hours: false
@@ -21,7 +21,7 @@ risk:
   daily_loss_limit_pct: 2.0
   max_consecutive_losses: 4
   atr_stop_multiplier: 1.5
-  atr_target_multiplier: 2.5
+  atr_target_multiplier: 3.0
 strategy:
   name: ORBEMAVWAPStrategy
   orb_minutes: 15
@@ -35,7 +35,9 @@ strategy:
   # Risk management add-ons (all optional, safe defaults preserve old behavior)
   breakeven_r: 1.0           # move stop to breakeven once price moves 1R in our favor
   trail_atr_mult: 1.0        # once breakeven, trail stop by 1x ATR behind price
-  max_holding_candles: 8     # force exit after 8 candles (2 hours on 15-min bars) if still open
+  max_holding_candles: 12    # force exit after 12 candles (3 hours on 15-min bars) if still open
+  early_cut_candles: 5       # if still below early_cut_min_r after 5 candles, cut early (frees capital instead of waiting out max_holding_candles)
+  early_cut_min_r: 0.3       # R-multiple threshold below which a trade is considered stalled
   min_atr_pct: 0.15          # skip entries when ATR/close% is below this (too illiquid/choppy)
   max_atr_pct: 3.0           # skip entries when ATR/close% is above this (news/event volatility)
 watchlist:

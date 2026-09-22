@@ -225,6 +225,7 @@ def run():
         logger.warning("allow_after_hours=true — EOD square-off is disabled for WebSocket debugging.")
     no_setup_alert_sent = False    
     alerted_tokens      = set()    # Prevent duplicate alerts
+    alerted_directions  : dict[str, str] = {}  # token -> "long"/"short" for entries actually alerted
     current_ltps        : dict[str, float] = {}
 
     # NEW: Signal buffering for Top Pick logic
@@ -290,6 +291,7 @@ def run():
                     # Mark as alerted so we don't resend it today
                     alert_key = f"{top_signal.token}_{top_signal.signal.value}_{top_signal.entry_window_mins}"
                     alerted_tokens.add(alert_key)
+                    alerted_directions[top_signal.token] = "long" if top_signal.signal == Signal.BUY else "short"
                     
                     # Send Alert
                     alerter.send_trade_alert(top_signal)
@@ -301,14 +303,17 @@ def run():
                         can, block_reason = breaker.can_trade()
                         if not can:
                             logger.warning(f"[AutoExec] Skipped {top_signal.symbol}: {block_reason}")
+                            alerter.send_order_skipped(top_signal.symbol, block_reason)
                             continue
                         if position_mgr.has_position(top_signal.token):
                             logger.warning(f"[AutoExec] Already in a position for {top_signal.symbol} — skipping.")
+                            alerter.send_order_skipped(top_signal.symbol, "Already in a position for this symbol")
                             continue
 
                         qty = sizer.compute_qty(top_signal.entry_price, top_signal.stop_loss)
                         if qty <= 0:
                             logger.warning(f"[AutoExec] Qty computed as 0 for {top_signal.symbol} — skipping.")
+                            alerter.send_order_skipped(top_signal.symbol, "Computed qty was 0 (stop distance too tight for risk budget)")
                             continue
 
                         txn = "BUY" if top_signal.signal == Signal.BUY else "SELL"
@@ -401,6 +406,13 @@ def run():
             elif signal.is_exit():
                 ltp = current_ltps.get(token, signal.entry_price)
                 logger.info(f"[EXIT] {signal.symbol} | {signal.reason} | LTP=₹{ltp:.2f}")
+
+                # This token's own entry was never selected in the top-2 alert —
+                # nothing was actually reported to the user, so don't alert its exit either.
+                exit_direction = "long" if signal.signal == Signal.EXIT_LONG else "short"
+                if alerted_directions.get(token) != exit_direction:
+                    continue
+                alerted_directions.pop(token, None)
 
                 pnl = None
                 if auto_execute and position_mgr.has_position(token):
