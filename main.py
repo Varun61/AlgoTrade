@@ -123,6 +123,16 @@ def run():
     algo_logger = AlgoLogger()
     alerter     = TelegramAlerter()
 
+    # ------------------------------------------------------------------
+    # 1. Auth
+    # ------------------------------------------------------------------
+    logger.info("=== Angel One Algo — NOTIFICATION-ONLY MODE ===")
+    sm  = SessionManager()
+    obj = sm.login()
+    tokens = sm.get_tokens()
+    algo_logger.log_system("Session started — notification-only mode (TOP PICK ONLY)")
+    alerter.send_session_start(mode, symbols, capital)
+
     # Auto-execution is OFF by default (trading.auto_execute in settings.yaml).
     # With it off, order_mgr/position_mgr/sizer/breaker are never touched —
     # the loop below behaves exactly as it always has (alerts only).
@@ -139,16 +149,6 @@ def run():
     ) if auto_execute else None
     token_exchange = {str(inst["token"]): inst["exchange"] for inst in watchlist}
     logger.info(f"Auto-execute: {'ENABLED — orders will be placed (' + mode.upper() + ' mode)' if auto_execute else 'disabled — alerts only'}")
-
-    # ------------------------------------------------------------------
-    # 1. Auth
-    # ------------------------------------------------------------------
-    logger.info("=== Angel One Algo — NOTIFICATION-ONLY MODE ===")
-    sm  = SessionManager()
-    obj = sm.login()
-    tokens = sm.get_tokens()
-    algo_logger.log_system("Session started — notification-only mode (TOP PICK ONLY)")
-    alerter.send_session_start(mode, symbols, capital)
 
     # ------------------------------------------------------------------
     # 2. Instrument master
