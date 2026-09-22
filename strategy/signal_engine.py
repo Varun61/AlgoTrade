@@ -122,6 +122,17 @@ class ORBEMAVWAPStrategy(StrategyBase):
         """Live stop-loss (post breakeven/trailing), for callers tracking an intrabar hard stop."""
         return self._stop_loss if self._position is not None else None
 
+    def get_current_target(self) -> float | None:
+        """Live target, for callers tracking an intrabar hard target."""
+        return self._target if self._position is not None else None
+
+    def get_position_direction(self) -> str | None:
+        """'long' | 'short' | None — for callers tracking intrabar exits."""
+        return self._position
+
+    def get_entry_price(self) -> float | None:
+        return self._entry_price if self._position is not None else None
+
     # ---------------------------------------------------------------
     # Main candle handler
     # ---------------------------------------------------------------

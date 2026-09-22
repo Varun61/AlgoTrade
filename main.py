@@ -234,6 +234,35 @@ def run():
 
     import pandas as pd
 
+    def _handle_exit(token: str, symbol: str, direction: str, exit_price: float,
+                      entry_price: float, reason: str) -> None:
+        """Shared exit handling for both candle-close and intrabar (tick-level) triggers."""
+        if alerted_directions.get(token) != direction:
+            return  # This token's entry was never actually alerted (not a top pick) — skip.
+        alerted_directions.pop(token, None)
+
+        pnl = None
+        if auto_execute and position_mgr.has_position(token):
+            pos = position_mgr.get_position(token)
+            exit_txn = "SELL" if pos["direction"] == "long" else "BUY"
+            exit_order_id = order_mgr.place_order(
+                symbol=pos["symbol"], token=token,
+                exchange=token_exchange.get(token, "NSE"),
+                transaction=exit_txn, qty=pos["qty"], order_type="MARKET",
+            )
+            pnl = position_mgr.close_position(token, exit_price, exit_order_id or "")
+            breaker.on_trade_close(pnl)
+            alerter.send_order_closed(exit_order_id or "?", symbol, exit_price, pnl)
+
+        alerter.send_exit_alert(
+            symbol      = symbol,
+            direction   = direction,
+            exit_price  = exit_price,
+            entry_price = entry_price,
+            reason      = reason,
+            pnl         = pnl,
+        )
+
     # ------------------------------------------------------------------
     # 6. Main event loop
     # ------------------------------------------------------------------
@@ -354,6 +383,28 @@ def run():
             token = tick["token"]
             current_ltps[token] = tick["ltp"]
 
+            # ----------------------------------------------------------
+            # Intrabar stop/target check — runs on every tick, not just at
+            # candle close, so an open position isn't exposed to a full
+            # 15-min bar's worth of adverse movement before we react.
+            # ----------------------------------------------------------
+            open_strat = strategies.get(token)
+            if open_strat is not None:
+                direction = open_strat.get_position_direction()
+                if direction is not None:
+                    ltp    = tick["ltp"]
+                    stop   = open_strat.get_current_stop()
+                    target = open_strat.get_current_target()
+                    hit_stop   = (direction == "long"  and ltp <= stop)   or (direction == "short" and ltp >= stop)
+                    hit_target = (direction == "long"  and ltp >= target) or (direction == "short" and ltp <= target)
+                    if hit_stop or hit_target:
+                        reason = f"{'Stop' if hit_stop else 'Target'} hit (intrabar): ₹{ltp:.2f}"
+                        entry_price = open_strat.get_entry_price()
+                        symbol = open_strat.symbol
+                        logger.info(f"[EXIT-INTRABAR] {symbol} | {reason}")
+                        open_strat.force_exit()
+                        _handle_exit(token, symbol, direction, ltp, entry_price, reason)
+
             agg = aggregators.get(token)
             if agg is None:
                 continue
@@ -407,34 +458,8 @@ def run():
                 ltp = current_ltps.get(token, signal.entry_price)
                 logger.info(f"[EXIT] {signal.symbol} | {signal.reason} | LTP=₹{ltp:.2f}")
 
-                # This token's own entry was never selected in the top-2 alert —
-                # nothing was actually reported to the user, so don't alert its exit either.
                 exit_direction = "long" if signal.signal == Signal.EXIT_LONG else "short"
-                if alerted_directions.get(token) != exit_direction:
-                    continue
-                alerted_directions.pop(token, None)
-
-                pnl = None
-                if auto_execute and position_mgr.has_position(token):
-                    pos = position_mgr.get_position(token)
-                    exit_txn = "SELL" if pos["direction"] == "long" else "BUY"
-                    exit_order_id = order_mgr.place_order(
-                        symbol=pos["symbol"], token=token,
-                        exchange=token_exchange.get(token, "NSE"),
-                        transaction=exit_txn, qty=pos["qty"], order_type="MARKET",
-                    )
-                    pnl = position_mgr.close_position(token, ltp, exit_order_id or "")
-                    breaker.on_trade_close(pnl)
-                    alerter.send_order_closed(exit_order_id or "?", signal.symbol, ltp, pnl)
-
-                alerter.send_exit_alert(
-                    symbol      = signal.symbol,
-                    direction   = "long" if signal.signal == Signal.EXIT_LONG else "short",
-                    exit_price  = ltp,
-                    entry_price = signal.entry_price,
-                    reason      = signal.reason,
-                    pnl         = pnl,
-                )
+                _handle_exit(token, signal.symbol, exit_direction, ltp, signal.entry_price, signal.reason)
 
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt — shutting down.")
