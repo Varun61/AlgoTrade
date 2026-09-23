@@ -308,3 +308,48 @@ def test_regime_gate_allows_when_disabled():
     )
     sig = strat.on_candle_close(history.iloc[-1], history)
     assert sig.signal == Signal.BUY
+
+
+def test_confirmation_gate_blocks_single_candle_whipsaw():
+    # Breakout bar is bullish, but the candle immediately before it is bearish
+    # (open > close) — a 2-candle confirmation requirement should reject this.
+    history = _make_breakout_history()
+    history.loc[history.index[-2], ["open", "close"]] = [100.9, 100.5]  # red candle
+    strat = make_strategy(
+        candle_minutes=1, orb_minutes=1, ema_fast=2, ema_slow=4,
+        rsi_period=4, rsi_overbought=99.5, rsi_oversold=5, atr_period=4,
+        vwap_filter=False, min_confidence=0.0, volume_avg_periods=4,
+        breakeven_r=100.0, trail_atr_mult=100.0, max_holding_candles=0,
+        confirmation_candles=2,
+    )
+    sig = strat.on_candle_close(history.iloc[-1], history)
+    assert sig.signal == Signal.HOLD
+
+
+def test_confirmation_gate_allows_consecutive_same_direction_candles():
+    history = _make_breakout_history()
+    history.loc[history.index[-2], ["open", "close"]] = [100.7, 100.8]  # green candle
+    strat = make_strategy(
+        candle_minutes=1, orb_minutes=1, ema_fast=2, ema_slow=4,
+        rsi_period=4, rsi_overbought=99.5, rsi_oversold=5, atr_period=4,
+        vwap_filter=False, min_confidence=0.0, volume_avg_periods=4,
+        breakeven_r=100.0, trail_atr_mult=100.0, max_holding_candles=0,
+        confirmation_candles=2,
+    )
+    sig = strat.on_candle_close(history.iloc[-1], history)
+    assert sig.signal == Signal.BUY
+
+
+def test_confirmation_gate_allows_when_disabled():
+    history = _make_breakout_history()
+    history.loc[history.index[-2], ["open", "close"]] = [100.9, 100.5]  # red candle
+    strat = make_strategy(
+        candle_minutes=1, orb_minutes=1, ema_fast=2, ema_slow=4,
+        rsi_period=4, rsi_overbought=99.5, rsi_oversold=5, atr_period=4,
+        vwap_filter=False, min_confidence=0.0, volume_avg_periods=4,
+        breakeven_r=100.0, trail_atr_mult=100.0, max_holding_candles=0,
+        confirmation_candles=0,
+    )
+    sig = strat.on_candle_close(history.iloc[-1], history)
+    assert sig.signal == Signal.BUY
+

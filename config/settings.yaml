@@ -63,6 +63,7 @@ strategy:
   max_atr_pct: 3.0           # skip entries when ATR/close% is above this (news/event volatility)
   min_adx: 15                # regime filter: skip entries when ADX is below this (choppy/non-trending); 0 = disabled
   min_ema_trend_factor: 8    # skip entries when the ema_trend confidence sub-factor (/20) is below this — filters out "high total score but no real trend yet" setups that the additive scoring can mask
+  confirmation_candles: 0    # require N consecutive same-direction candles right before entry to avoid single-candle whipsaws; 0 = disabled (kept off pending backtest validation)
 watchlist:
   instruments:
   - exchange: NSE

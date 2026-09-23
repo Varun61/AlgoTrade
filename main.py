@@ -201,12 +201,19 @@ def run():
             atr_stop_mult   = risk_cfg["atr_stop_multiplier"],
             atr_target_mult = risk_cfg["atr_target_multiplier"],
             vwap_filter     = strategy_cfg["vwap_filter"],
+            min_confidence      = strategy_cfg.get("min_confidence", 70.0),
+            volume_avg_periods  = strategy_cfg.get("volume_avg_periods", 20),
             breakeven_r         = strategy_cfg.get("breakeven_r", 1.0),
             trail_atr_mult      = strategy_cfg.get("trail_atr_mult", 1.0),
             max_holding_candles = strategy_cfg.get("max_holding_candles", 0),
+            early_cut_candles  = strategy_cfg.get("early_cut_candles", 0),
+            early_cut_min_r    = strategy_cfg.get("early_cut_min_r", 0.3),
             min_atr_pct         = strategy_cfg.get("min_atr_pct", 0.0),
             max_atr_pct         = strategy_cfg.get("max_atr_pct", 100.0),
+            adx_period          = strategy_cfg.get("adx_period", 14),
             min_adx             = strategy_cfg.get("min_adx", 0.0),
+            min_ema_trend_factor = strategy_cfg.get("min_ema_trend_factor", 0.0),
+            confirmation_candles = strategy_cfg.get("confirmation_candles", 0),
         )
         strategies[token] = strat
 

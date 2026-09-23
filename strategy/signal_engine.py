@@ -61,6 +61,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
         adx_period           : int   = 14     (period for the ADX regime filter)
         min_adx              : float = 0.0    (skip entries if ADX is below this — choppy/non-trending regime; 0 = disabled)
         min_ema_trend_factor : float = 0.0    (skip entries if the ema_trend confidence sub-factor is below this, out of 20; 0 = disabled)
+        confirmation_candles : int   = 0      (require this many consecutive same-direction candles — including the signal candle — before entering; 0 = disabled)
     """
 
     def __init__(self, symbol: str, token: str, **kwargs) -> None:
@@ -91,6 +92,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self.adx_period        = int(p.get("adx_period",           14))
         self.min_adx           = float(p.get("min_adx",           0.0))
         self.min_ema_trend_factor = float(p.get("min_ema_trend_factor", 0.0))
+        self.confirmation_candles = int(p.get("confirmation_candles", 0))
 
         # Session state
         self._position         = None     # None | "long" | "short"
@@ -195,13 +197,25 @@ class ORBEMAVWAPStrategy(StrategyBase):
             if pd.isna(adx_val) or adx_val < self.min_adx:
                 return hold
 
+        # === Candle-confirmation gate — require N consecutive same-direction candles
+        # (including the signal candle) before entering, instead of firing on a single
+        # candle touching the breakout level. Cuts down single-candle whipsaw entries.
+        opens = history["open"]
+        bullish_confirmed = True
+        bearish_confirmed = True
+        if self.confirmation_candles > 0:
+            recent_closes = closes.iloc[-self.confirmation_candles:]
+            recent_opens  = opens.iloc[-self.confirmation_candles:]
+            bullish_confirmed = bool((recent_closes.values > recent_opens.values).all())
+            bearish_confirmed = bool((recent_closes.values < recent_opens.values).all())
+
         # === ENTRY checks ===
         vwap_ok_long  = (close > vwap_v) if self.vwap_filter else True
         vwap_ok_short = (close < vwap_v) if self.vwap_filter else True
 
         # --- LONG setup ---
         if (close > self._orb_high and ema_f > ema_s
-                and rsi_val < self.rsi_overbought and vwap_ok_long):
+                and rsi_val < self.rsi_overbought and vwap_ok_long and bullish_confirmed):
 
             sl     = close - (atr_val * self.atr_stop_mult)
             target = close + (atr_val * self.atr_target_mult)
@@ -238,7 +252,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
 
         # --- SHORT setup ---
         if (close < self._orb_low and ema_f < ema_s
-                and rsi_val > self.rsi_oversold and vwap_ok_short):
+                and rsi_val > self.rsi_oversold and vwap_ok_short and bearish_confirmed):
 
             sl     = close + (atr_val * self.atr_stop_mult)
             target = close - (atr_val * self.atr_target_mult)
