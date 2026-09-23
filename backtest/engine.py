@@ -37,7 +37,8 @@ class BacktestConfig:
     capital          : float = 100_000.0
     per_trade_risk   : float = 1.0       # % of capital
     slippage_pct     : float = 0.05      # 0.05% slippage on entry
-    brokerage_per_lot: float = 20.0      # ₹ per round-trip trade (confirmed actual plan cost)
+    brokerage_pct    : float = 0.03      # % per executed order (confirmed actual plan)
+    brokerage_cap    : float = 20.0      # ₹ cap per executed order
     daily_loss_limit : float = 2.0
     max_trades_day   : int   = 10
     max_concurrent   : int   = 3
@@ -133,7 +134,7 @@ class BacktestEngine:
                 trade = self._close_position(current_position, float(candle["close"]),
                                               "EOD square-off", sizer, breaker)
                 trades.append(trade)
-                capital += trade["pnl"] - self.cfg.brokerage_per_lot
+                capital += trade["pnl"]
                 equity_curve.append(capital)
                 current_position = None
                 strategy.force_exit()
@@ -153,7 +154,7 @@ class BacktestEngine:
                     trade = self._close_position(current_position, float(candle["close"]),
                                                   exit_signal, sizer, breaker)
                     trades.append(trade)
-                    capital += trade["pnl"] - self.cfg.brokerage_per_lot
+                    capital += trade["pnl"]
                     equity_curve.append(capital)
                     current_position = None
                     strategy.force_exit()
@@ -163,7 +164,7 @@ class BacktestEngine:
                         trade = self._close_position(current_position, float(candle["close"]),
                                                        signal.reason, sizer, breaker)
                         trades.append(trade)
-                        capital += trade["pnl"] - self.cfg.brokerage_per_lot
+                        capital += trade["pnl"]
                         equity_curve.append(capital)
                         current_position = None
                     else:
@@ -236,12 +237,20 @@ class BacktestEngine:
             if low  <= pos["target"]   : return "Target hit"
         return None
 
+    def _order_brokerage(self, order_value: float) -> float:
+        """Per-executed-order brokerage: 0.03% of order value, capped at brokerage_cap."""
+        return min(order_value * self.cfg.brokerage_pct / 100, self.cfg.brokerage_cap)
+
     def _close_position(self, pos: dict, exit_price: float, reason: str,
                          sizer: PositionSizer, breaker: CircuitBreaker) -> dict:
         if pos["direction"] == "long":
-            pnl = (exit_price - pos["entry_price"]) * pos["qty"]
+            gross_pnl = (exit_price - pos["entry_price"]) * pos["qty"]
         else:
-            pnl = (pos["entry_price"] - exit_price) * pos["qty"]
+            gross_pnl = (pos["entry_price"] - exit_price) * pos["qty"]
+
+        brokerage = (self._order_brokerage(pos["entry_price"] * pos["qty"])
+                     + self._order_brokerage(exit_price * pos["qty"]))
+        pnl = gross_pnl - brokerage
 
         breaker.on_trade_close(pnl)
         sizer.update_capital(sizer.capital + pnl)
@@ -252,6 +261,8 @@ class BacktestEngine:
             "entry_price": pos["entry_price"],
             "exit_price" : exit_price,
             "qty"        : pos["qty"],
+            "gross_pnl"  : round(gross_pnl, 2),
+            "brokerage"  : round(brokerage, 2),
             "pnl"        : round(pnl, 2),
             "entry_time" : pos.get("entry_time"),
             "reason"     : reason,

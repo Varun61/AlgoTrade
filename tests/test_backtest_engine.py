@@ -69,7 +69,7 @@ def make_engine(script):
         strategy_class=ScriptedStrategy,
         symbol="TEST-EQ", token="1",
         strategy_kwargs={"script": script},
-        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_per_lot=0.0),
+        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_pct=0.0),
     )
 
 
@@ -101,7 +101,7 @@ def test_strategy_exit_signal_is_honored_without_intrabar_hit():
     engine = BacktestEngine(
         strategy_class=TrackedScripted, symbol="TEST-EQ", token="1",
         strategy_kwargs={"script": script},
-        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_per_lot=0.0),
+        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_pct=0.0),
     )
     result = engine.run(candles)
 
@@ -147,7 +147,7 @@ def test_intrabar_stop_hit_bypasses_strategy_and_calls_force_exit():
     engine = BacktestEngine(
         strategy_class=TrackedScripted, symbol="TEST-EQ", token="1",
         strategy_kwargs={"script": script},
-        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_per_lot=0.0),
+        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_pct=0.0),
     )
     result = engine.run(candles)
 
@@ -193,7 +193,7 @@ def test_intrabar_stop_uses_strategy_trailing_update_not_stale_entry_stop():
     engine = BacktestEngine(
         strategy_class=TrailingScripted, symbol="TEST-EQ", token="1",
         strategy_kwargs={"script": script},
-        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_per_lot=0.0),
+        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_pct=0.0),
     )
     result = engine.run(candles)
 
@@ -276,7 +276,7 @@ def test_daily_reset_called_once_for_single_day_dataset():
     engine = BacktestEngine(
         strategy_class=TrackedScripted, symbol="TEST-EQ", token="1",
         strategy_kwargs={"script": {}},
-        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_per_lot=0.0),
+        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_pct=0.0),
     )
     engine.run(candles)
 
@@ -301,7 +301,7 @@ def test_daily_reset_called_on_each_new_calendar_day():
     engine = BacktestEngine(
         strategy_class=TrackedScripted, symbol="TEST-EQ", token="1",
         strategy_kwargs={"script": {}},
-        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_per_lot=0.0),
+        config=BacktestConfig(capital=100_000, slippage_pct=0.0, brokerage_pct=0.0),
     )
     engine.run(candles)
 
