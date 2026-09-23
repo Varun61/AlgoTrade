@@ -116,7 +116,7 @@ def run():
     from monitoring.logger          import AlgoLogger
     from monitoring.alerts          import TelegramAlerter
     from execution.order_manager    import OrderManager
-    from execution.position_manager import PositionManager
+    from execution.position_manager import PositionManager, find_weakest_position
     from risk.position_sizer        import PositionSizer
     from risk.circuit_breaker       import CircuitBreaker
 
@@ -267,28 +267,13 @@ def run():
         )
 
     def _find_weakest_position() -> str | None:
-        """
-        Token of the open position closest to hitting its own stop-loss (smallest
-        fraction of initial risk remaining) — the rotation candidate to close out
-        in favor of a stronger new setup. Uses the strategy's live (post-breakeven/
-        trailing) stop rather than position_mgr's static entry-time stop.
-        """
-        weakest_token, weakest_frac = None, None
-        for pos in position_mgr.get_all_positions():
-            ltp = current_ltps.get(pos["token"], pos["entry_price"])
-            open_strat = strategies.get(pos["token"])
-            live_stop = open_strat.get_current_stop() if open_strat else None
-            stop = live_stop if live_stop is not None else pos["stop_loss"]
-            risk = abs(pos["entry_price"] - stop)
-            if risk <= 0:
-                continue
-            if pos["direction"] == "long":
-                frac_remaining = (ltp - stop) / risk
-            else:
-                frac_remaining = (stop - ltp) / risk
-            if weakest_frac is None or frac_remaining < weakest_frac:
-                weakest_token, weakest_frac = pos["token"], frac_remaining
-        return weakest_token
+        """Rotation candidate: open position nearest its own (live, trailing) stop."""
+        live_stops = {
+            token: strat.get_current_stop()
+            for token, strat in strategies.items()
+            if strat.get_current_stop() is not None
+        }
+        return find_weakest_position(position_mgr.get_all_positions(), current_ltps, live_stops)
 
     # ------------------------------------------------------------------
     # 6. Main event loop

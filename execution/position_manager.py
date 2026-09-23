@@ -137,3 +137,36 @@ class PositionManager:
         self._positions     = {}
         self._realized_pnl  = 0.0
         self._closed_trades = []
+
+
+def find_weakest_position(
+    positions: list[dict],
+    current_ltps: dict[str, float],
+    live_stops: dict[str, float] | None = None,
+) -> str | None:
+    """
+    Token of the open position closest to hitting its own stop-loss (smallest
+    fraction of initial risk remaining) — used to pick a rotation candidate to
+    close out in favor of a stronger new setup.
+
+    live_stops optionally supplies the strategy's current (post-breakeven/
+    trailing) stop per token; falls back to the position's static entry-time
+    stop_loss when not provided/present for a token.
+    """
+    live_stops = live_stops or {}
+    weakest_token, weakest_frac = None, None
+    for pos in positions:
+        token = pos["token"]
+        ltp = current_ltps.get(token, pos["entry_price"])
+        stop = live_stops.get(token, pos["stop_loss"])
+        risk = abs(pos["entry_price"] - stop)
+        if risk <= 0:
+            continue
+        if pos["direction"] == "long":
+            frac_remaining = (ltp - stop) / risk
+        else:
+            frac_remaining = (stop - ltp) / risk
+        if weakest_frac is None or frac_remaining < weakest_frac:
+            weakest_token, weakest_frac = token, frac_remaining
+    return weakest_token
+
