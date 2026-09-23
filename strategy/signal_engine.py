@@ -173,11 +173,25 @@ class ORBEMAVWAPStrategy(StrategyBase):
         cur_vol      = float(candle["volume"])
 
         # --- ORB (set once per session) ---
-        if self._orb_high is None and n >= self.orb_candles:
-            self._orb_high, self._orb_low = opening_range(history, self.orb_candles)
+        # NOTE: `history` is the FULL cumulative multi-day history (warm-up +
+        # every candle since), not just today's bars — opening_range() must be
+        # restricted to today's rows only, or it silently computes the range
+        # of the very first candles ever seen (e.g. ~30 days ago), not today's
+        # actual opening range. This was a real bug: `n`/`history` here used
+        # to be the whole dataset, so every day after the first one in a given
+        # run computed ORB off a stale, unrelated reference level.
+        if "timestamp" in history.columns:
+            cur_date_orb = pd.Timestamp(candle["timestamp"]).date()
+            today_hist = history[history["timestamp"].dt.date == cur_date_orb]
+        else:
+            today_hist = history
+        n_today = len(today_hist)
+
+        if self._orb_high is None and n_today >= self.orb_candles:
+            self._orb_high, self._orb_low = opening_range(today_hist, self.orb_candles)
             logger.info(f"[{self.symbol}] ORB set: H={self._orb_high:.2f}, L={self._orb_low:.2f}")
 
-        if self._orb_high is None or n <= self.orb_candles:
+        if self._orb_high is None or n_today <= self.orb_candles:
             return hold
 
         close = float(candle["close"])
@@ -433,18 +447,10 @@ class ORBEMAVWAPStrategy(StrategyBase):
         else:
             factors["volume"] = 0.0  # Below-average volume = weak signal
 
-        # 6. Risk:Reward ratio
-        risk   = abs(close - sl)
-        reward = abs(target - close)
-        rr     = reward / risk if risk > 0 else 0
-        if rr >= 2.5:
-            factors["rr_ratio"] = 20.0
-        elif rr >= 2.0:
-            factors["rr_ratio"] = 15.0
-        elif rr >= 1.5:
-            factors["rr_ratio"] = 10.0
-        else:
-            factors["rr_ratio"] = 0.0  # Bad R:R — never alert
+        # 6. Risk:Reward ratio — NOTE: removed as a scoring factor. sl/target are both
+        # derived purely from atr_val * config multipliers (atr_stop_mult/atr_target_mult),
+        # so this ratio is a strategy-wide constant identical on every single trade —
+        # it carried zero per-trade information despite being weighted up to 20/100.
 
         total = min(100.0, sum(factors.values()))
         return total, factors
@@ -491,18 +497,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
         else:
             factors["volume"] = 0.0
 
-        # 6. R:R
-        risk   = abs(sl - close)
-        reward = abs(close - target)
-        rr     = reward / risk if risk > 0 else 0
-        if rr >= 2.5:
-            factors["rr_ratio"] = 20.0
-        elif rr >= 2.0:
-            factors["rr_ratio"] = 15.0
-        elif rr >= 1.5:
-            factors["rr_ratio"] = 10.0
-        else:
-            factors["rr_ratio"] = 0.0
+        # 6. Risk:Reward ratio — removed (see _score_long); constant per-config, no signal.
 
         total = min(100.0, sum(factors.values()))
         return total, factors

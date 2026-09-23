@@ -50,8 +50,6 @@ def test_score_long_all_factors_hand_computed():
     assert factors["rsi_quality"] == 20.0
     # 5. volume: 2000/1000=2.0 ratio >= 1.5 -> 20.0
     assert factors["volume"] == 20.0
-    # 6. rr_ratio: reward/risk = 5.5/2.5 = 2.2, in [2.0,2.5) -> 15.0
-    assert factors["rr_ratio"] == 15.0
 
     assert score == pytest.approx(sum(factors.values()))
 
@@ -63,15 +61,6 @@ def test_score_long_below_vwap_scores_zero_vwap_factor():
                                     vwap_v=101.0,  # price below VWAP -> bad for long
                                     cur_vol=2000, avg_vol=1000, sl=98, target=106)
     assert factors["vwap_position"] == 0.0
-
-
-def test_score_long_bad_rr_scores_zero():
-    strat = make_strategy()
-    strat._orb_high = 100.0
-    _, factors = strat._score_long(close=100.5, ema_f=10.1, ema_s=10.0, rsi_val=55,
-                                    vwap_v=100.2, cur_vol=2000, avg_vol=1000,
-                                    sl=99.5, target=101.0)   # risk=1, reward=0.5 -> rr=0.5
-    assert factors["rr_ratio"] == 0.0
 
 
 def test_score_short_mirrors_long_logic():
@@ -86,7 +75,6 @@ def test_score_short_mirrors_long_logic():
                                          cur_vol, avg_vol, sl, target)
     assert factors["rsi_quality"] == 20.0     # 45 in [40,50]
     assert factors["volume"] == 20.0
-    assert factors["rr_ratio"] == 15.0
     assert score == pytest.approx(sum(factors.values()))
 
 
@@ -282,6 +270,60 @@ def test_volatility_gate_allows_when_disabled():
     sig = strat.on_candle_close(history.iloc[-1], history)
     assert sig.signal == Signal.BUY
     assert 0.0 <= sig.confidence <= 100.0
+
+
+def _make_two_day_history():
+    """
+    Day 1 (2024-01-31): opening range ~50 (far from day 2's prices) — if ORB
+    were ever (bug) computed from the absolute first candles of the whole
+    cumulative history instead of TODAY's candles, day 2 would incorrectly
+    inherit day 1's ~50 range instead of its own ~100 range.
+    Day 2 (2024-02-01): same shape as _make_breakout_history() (real ORB ~100,
+    breakout bar clears it and should fire a BUY).
+    """
+    rows = []
+    t0 = datetime(2024, 1, 31, 9, 15)
+    for i, c in enumerate([50.0, 50.1, 49.9, 50.2, 50.0, 50.3, 50.1, 50.4, 50.2, 50.5]):
+        rows.append({"timestamp": t0 + timedelta(minutes=i), "open": c - 0.1,
+                     "high": c + 0.15, "low": c - 0.15, "close": c, "volume": 1000 + i * 10})
+
+    t1 = datetime(2024, 2, 1, 9, 15)
+    closes = [100.0, 100.3, 100.1, 100.4, 100.3, 100.6, 100.5, 100.8, 101.0]
+    for i, c in enumerate(closes):
+        rows.append({"timestamp": t1 + timedelta(minutes=i), "open": c - 0.1,
+                     "high": c + 0.15, "low": c - 0.15, "close": c, "volume": 1000 + i * 10})
+    rows.append({"timestamp": t1 + timedelta(minutes=9), "open": 101.0, "high": 103.5,
+                 "low": 100.9, "close": 103.0, "volume": 4000})
+    return pd.DataFrame(rows)
+
+
+def test_orb_uses_todays_candles_not_stale_multiday_history():
+    # Regression test for a bug where opening_range() was computed on the full
+    # cumulative multi-day `history` df (df.head(orb_candles)), so any day
+    # after the first one in the history window silently reused day 1's
+    # opening range instead of its own.
+    history = _make_two_day_history()
+    strat = make_strategy(
+        candle_minutes=1, orb_minutes=1, ema_fast=2, ema_slow=4,
+        rsi_period=4, rsi_overbought=99.5, rsi_oversold=5, atr_period=4,
+        vwap_filter=False, min_confidence=0.0, volume_avg_periods=4,
+        breakeven_r=100.0, trail_atr_mult=100.0, max_holding_candles=0,
+    )
+    day1_end = 10  # first 10 rows are day 1
+    for i in range(3, day1_end):
+        strat.on_candle_close(history.iloc[i], history.iloc[:i + 1])
+
+    # New trading day: reset (as the live/backtest engines do daily) then feed day-2 bars.
+    strat.reset()
+    signals = []
+    for i in range(day1_end, len(history)):
+        signals.append(strat.on_candle_close(history.iloc[i], history.iloc[:i + 1]))
+
+    # Day 2's real opening range is ~100 (from its own first candle), so a
+    # breakout above it should fire a BUY at some point, not be silently
+    # miscalculated against day 1's ~50 range (which nothing ever crosses).
+    assert any(s.signal == Signal.BUY for s in signals)
+    assert strat._orb_high == pytest.approx(100.15, abs=0.05)  # day 2's own opening candle high
 
 
 def test_regime_gate_blocks_when_adx_too_low():

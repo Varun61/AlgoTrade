@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 class BacktestConfig:
     capital          : float = 100_000.0
     per_trade_risk   : float = 1.0       # % of capital
+    max_position_value_pct: float = 50.0 # cap on single position value, % of capital
     slippage_pct     : float = 0.05      # 0.05% slippage on entry
     brokerage_pct    : float = 0.03      # % per executed order (confirmed actual plan)
     brokerage_cap    : float = 20.0      # ₹ cap per executed order
@@ -100,6 +101,7 @@ class BacktestEngine:
         sizer = PositionSizer(
             capital=self.cfg.capital,
             per_trade_risk_pct=self.cfg.per_trade_risk,
+            max_position_value=self.cfg.capital * self.cfg.max_position_value_pct / 100,
         )
         breaker = CircuitBreaker(
             capital=self.cfg.capital,
@@ -207,6 +209,8 @@ class BacktestEngine:
                         "target"      : signal.target,
                         "qty"         : qty,
                         "reason"      : signal.reason,
+                        "confidence"  : signal.confidence,
+                        "confidence_factors": signal.confidence_factors,
                     }
                     breaker.on_trade_open()
 
@@ -261,12 +265,16 @@ class BacktestEngine:
             "entry_price": pos["entry_price"],
             "exit_price" : exit_price,
             "qty"        : pos["qty"],
+            "stop_loss"  : pos.get("stop_loss"),
+            "target"     : pos.get("target"),
             "gross_pnl"  : round(gross_pnl, 2),
             "brokerage"  : round(brokerage, 2),
             "pnl"        : round(pnl, 2),
             "entry_time" : pos.get("entry_time"),
             "reason"     : reason,
             "win"        : pnl > 0,
+            "confidence" : pos.get("confidence"),
+            "confidence_factors": pos.get("confidence_factors"),
         }
 
     def _compute_metrics(self, trades: list[dict], equity: list[float]) -> BacktestResult:

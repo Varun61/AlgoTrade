@@ -141,7 +141,10 @@ def run():
     rotation_min_confidence = float(trading_cfg.get("rotation_min_confidence", 85))
     order_mgr    = OrderManager(smart_obj=obj) if auto_execute else None
     position_mgr = PositionManager() if auto_execute else None
-    sizer        = PositionSizer(capital=capital, per_trade_risk_pct=risk_cfg["per_trade_risk_pct"]) if auto_execute else None
+    sizer        = PositionSizer(
+        capital=capital, per_trade_risk_pct=risk_cfg["per_trade_risk_pct"],
+        max_position_value=capital * risk_cfg.get("max_position_value_pct", 50.0) / 100,
+    ) if auto_execute else None
     breaker      = CircuitBreaker(
         capital=capital,
         daily_loss_limit_pct=risk_cfg["daily_loss_limit_pct"],

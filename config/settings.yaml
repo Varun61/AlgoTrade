@@ -22,6 +22,7 @@ risk:
   max_consecutive_losses: 4
   atr_stop_multiplier: 1.5
   atr_target_multiplier: 3.0
+  max_position_value_pct: 50.0
 strategy:
   name: ORBEMAVWAPStrategy
   orb_minutes: 15
