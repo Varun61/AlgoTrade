@@ -21,7 +21,7 @@ trading:
   # position (the one closest to hitting its own stop-loss) to free a slot for
   # it, instead of just skipping the new setup. Off by default — test in paper
   # mode first, since forcing an early exit has real opportunity-cost risk.
-  allow_position_rotation: false
+  allow_position_rotation: true
   rotation_min_confidence: 92
 risk:
   per_trade_risk_pct: 1.0
