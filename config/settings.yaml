@@ -1,37 +1,17 @@
 trading:
   mode: paper
   capital: 25000
-  max_concurrent_positions: 5
+  max_concurrent_positions: 10
   max_trades_per_day: 10
   candle_interval_minutes: 15
   square_off_time: '15:15'
-  # No new positions opened after this time — trades entered too late have
-  # little runway before square_off_time and tend to get flattened at a small
-  # loss regardless of signal quality. Existing open positions are unaffected.
   new_entry_cutoff_time: '13:00'
   market_open: 09:15
   market_close: '15:30'
-  # Master switch for automatic order placement. When false (default), the
-  # bot only sends Telegram alerts with entry/SL/target — nothing is placed.
-  # Flip to true only after you've validated alert quality over live paper/
-  # real sessions. Even when true, trading.mode still governs paper vs. live
-  # fills inside OrderManager.
   auto_execute: true
-  # TEMP: keep the live feed running after square-off so we can debug WebSocket
-  # outside market hours. Set back to false for normal sessions.
   allow_after_hours: false
-  # Opt-in: when all max_concurrent_positions slots are full and a new signal
-  # arrives with confidence >= rotation_min_confidence, close the weakest open
-  # position (the one closest to hitting its own stop-loss) to free a slot for
-  # it, instead of just skipping the new setup. Off by default — test in paper
-  # mode first, since forcing an early exit has real opportunity-cost risk.
   allow_position_rotation: true
   rotation_min_confidence: 92
-# Market-wide regime gate: checks Nifty 50's own trend strength (daily ADX)
-# and India VIX before allowing any new entries — catches days where the
-# broad market itself is choppy/fearful, on top of the per-stock filters.
-# Keep enabled=false until validated over a few live paper sessions (it only
-# logs its decision in observe-only mode without blocking anything).
 market_regime:
   enabled: false
   min_market_adx: 18.0
@@ -52,18 +32,17 @@ strategy:
   rsi_oversold: 30
   atr_period: 14
   vwap_filter: true
-  min_confidence: 75         # skip entries scoring below this (default was 70, the bare-minimum threshold)
-  # Risk management add-ons (all optional, safe defaults preserve old behavior)
-  breakeven_r: 1.0           # move stop to breakeven once price moves 1R in our favor
-  trail_atr_mult: 1.0        # once breakeven, trail stop by 1x ATR behind price
-  max_holding_candles: 8     # force exit after 8 candles (2 hours on 15-min bars) if still open
-  early_cut_candles: 3       # if still below early_cut_min_r after 3 candles, cut early (frees capital instead of waiting out max_holding_candles)
-  early_cut_min_r: 0.3       # R-multiple threshold below which a trade is considered stalled
-  min_atr_pct: 0.15          # skip entries when ATR/close% is below this (too illiquid/choppy)
-  max_atr_pct: 3.0           # skip entries when ATR/close% is above this (news/event volatility)
-  min_adx: 15                # regime filter: skip entries when ADX is below this (choppy/non-trending); 0 = disabled
-  min_ema_trend_factor: 8    # skip entries when the ema_trend confidence sub-factor (/20) is below this — filters out "high total score but no real trend yet" setups that the additive scoring can mask
-  confirmation_candles: 0    # require N consecutive same-direction candles right before entry to avoid single-candle whipsaws; 0 = disabled (kept off pending backtest validation)
+  min_confidence: 75
+  breakeven_r: 1.0
+  trail_atr_mult: 1.0
+  max_holding_candles: 8
+  early_cut_candles: 3
+  early_cut_min_r: 0.3
+  min_atr_pct: 0.15
+  max_atr_pct: 3.0
+  min_adx: 15
+  min_ema_trend_factor: 8
+  confirmation_candles: 0
 watchlist:
   instruments:
   - exchange: NSE
@@ -474,6 +453,806 @@ watchlist:
     segment: 1
     token: '8080'
     symbol: SILVERBEES-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13061'
+    symbol: 360ONE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '25780'
+    symbol: APLAPOLLO-EQ
+  - exchange: NSE
+    segment: 1
+    token: '21238'
+    symbol: AUBANK-EQ
+  - exchange: NSE
+    segment: 1
+    token: '6066'
+    symbol: ATGL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '21614'
+    symbol: ABCAPITAL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11703'
+    symbol: ALKEM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '212'
+    symbol: ASHOKLEY-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14418'
+    symbol: ASTRAL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '275'
+    symbol: AUROPHARMA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '19585'
+    symbol: BSE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '4745'
+    symbol: BANKINDIA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '2144'
+    symbol: BDL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '422'
+    symbol: BHARATFORG-EQ
+  - exchange: NSE
+    segment: 1
+    token: '438'
+    symbol: BHEL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '759806'
+    symbol: GROWW-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11373'
+    symbol: BIOCON-EQ
+  - exchange: NSE
+    segment: 1
+    token: '8311'
+    symbol: BLUESTARCO-EQ
+  - exchange: NSE
+    segment: 1
+    token: '21508'
+    symbol: COCHINSHIP-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11543'
+    symbol: COFORGE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '15141'
+    symbol: COLPAL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '4749'
+    symbol: CONCOR-EQ
+  - exchange: NSE
+    segment: 1
+    token: '739'
+    symbol: COROMANDEL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '772'
+    symbol: DABUR-EQ
+  - exchange: NSE
+    segment: 1
+    token: '21690'
+    symbol: DIXON-EQ
+  - exchange: NSE
+    segment: 1
+    token: '676'
+    symbol: EXIDEIND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '6545'
+    symbol: NYKAA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1023'
+    symbol: FEDERALBNK-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14592'
+    symbol: FORTIS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '16783'
+    symbol: GVT&D-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13528'
+    symbol: GMRAIRPORT-EQ
+  - exchange: NSE
+    segment: 1
+    token: '7406'
+    symbol: GLENMARK-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1181'
+    symbol: GODFRYPHLP-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17875'
+    symbol: GODREJPROP-EQ
+  - exchange: NSE
+    segment: 1
+    token: '9819'
+    symbol: HAVELLS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1348'
+    symbol: HEROMOTOCO-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1406'
+    symbol: HINDPETRO-EQ
+  - exchange: NSE
+    segment: 1
+    token: '18457'
+    symbol: POWERINDIA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '20825'
+    symbol: HUDCO-EQ
+  - exchange: NSE
+    segment: 1
+    token: '21770'
+    symbol: ICICIGI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '760407'
+    symbol: ICICIAMC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11184'
+    symbol: IDFCFIRSTB-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14309'
+    symbol: INDIANB-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13611'
+    symbol: IRCTC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '20261'
+    symbol: IREDA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '29135'
+    symbol: INDUSTOWER-EQ
+  - exchange: NSE
+    segment: 1
+    token: '5258'
+    symbol: INDUSINDBK-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13751'
+    symbol: NAUKRI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17869'
+    symbol: JSWENERGY-EQ
+  - exchange: NSE
+    segment: 1
+    token: '18096'
+    symbol: JUBLFOOD-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13310'
+    symbol: KEI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '9683'
+    symbol: KPITTECH-EQ
+  - exchange: NSE
+    segment: 1
+    token: '2955'
+    symbol: KALYANKJIL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '24948'
+    symbol: LTF-EQ
+  - exchange: NSE
+    segment: 1
+    token: '760213'
+    symbol: LGEINDIA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1997'
+    symbol: LICHSGFIN-EQ
+  - exchange: NSE
+    segment: 1
+    token: '19234'
+    symbol: LAURUSLABS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '759605'
+    symbol: LENSKART-EQ
+  - exchange: NSE
+    segment: 1
+    token: '10440'
+    symbol: LUPIN-EQ
+  - exchange: NSE
+    segment: 1
+    token: '2277'
+    symbol: MRF-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13285'
+    symbol: M&MFIN-EQ
+  - exchange: NSE
+    segment: 1
+    token: '15380'
+    symbol: MANKIND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '4067'
+    symbol: MARICO-EQ
+  - exchange: NSE
+    segment: 1
+    token: '2142'
+    symbol: MFSL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14947'
+    symbol: MOTILALOFS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '4503'
+    symbol: MPHASIS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '31181'
+    symbol: MCX-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17400'
+    symbol: NHPC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '15332'
+    symbol: NMDC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '6364'
+    symbol: NATIONALUM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '20242'
+    symbol: OBEROIRLTY-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17438'
+    symbol: OIL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '6705'
+    symbol: PAYTM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '10738'
+    symbol: OFSS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '6656'
+    symbol: POLICYBZR-EQ
+  - exchange: NSE
+    segment: 1
+    token: '24184'
+    symbol: PIIND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14413'
+    symbol: PAGEIND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17029'
+    symbol: PATANJALI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '18365'
+    symbol: PERSISTENT-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14552'
+    symbol: PHOENIXLTD-EQ
+  - exchange: NSE
+    segment: 1
+    token: '9590'
+    symbol: POLYCAB-EQ
+  - exchange: NSE
+    segment: 1
+    token: '25049'
+    symbol: PREMIERENE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '20302'
+    symbol: PRESTIGE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '10990'
+    symbol: RADICO-EQ
+  - exchange: NSE
+    segment: 1
+    token: '9552'
+    symbol: RVNL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17971'
+    symbol: SBICARD-EQ
+  - exchange: NSE
+    segment: 1
+    token: '3273'
+    symbol: SRF-EQ
+  - exchange: NSE
+    segment: 1
+    token: '2963'
+    symbol: SAIL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '3363'
+    symbol: SUPREMEIND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '12018'
+    symbol: SUZLON-EQ
+  - exchange: NSE
+    segment: 1
+    token: '27066'
+    symbol: SWIGGY-EQ
+  - exchange: NSE
+    segment: 1
+    token: '3721'
+    symbol: TATACOMM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '3411'
+    symbol: TATAELXSI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1621'
+    symbol: TATAINVEST-EQ
+  - exchange: NSE
+    segment: 1
+    token: '312'
+    symbol: TIINDIA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11287'
+    symbol: UPL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '27969'
+    symbol: VMM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14366'
+    symbol: IDEA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '3718'
+    symbol: VOLTAS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '25907'
+    symbol: WAAREEENER-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11915'
+    symbol: YESBANK-EQ
+  - exchange: NSE
+    segment: 1
+    token: '7'
+    symbol: AARTIIND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '625'
+    symbol: ABREL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '40'
+    symbol: AEGISLOG-EQ
+  - exchange: NSE
+    segment: 1
+    token: '25977'
+    symbol: AFCONS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11343'
+    symbol: AFFLE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '100'
+    symbol: ARE&M-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1185'
+    symbol: AMBER-EQ
+  - exchange: NSE
+    segment: 1
+    token: '7145'
+    symbol: ANANDRATHI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13620'
+    symbol: ANANTRAJ-EQ
+  - exchange: NSE
+    segment: 1
+    token: '324'
+    symbol: ANGELONE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '5435'
+    symbol: APTUS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1508'
+    symbol: ASTERDM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '757645'
+    symbol: ATHERENERG-EQ
+  - exchange: NSE
+    segment: 1
+    token: '395'
+    symbol: BEML-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17279'
+    symbol: BLS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '2263'
+    symbol: BANDHANBNK-EQ
+  - exchange: NSE
+    segment: 1
+    token: '24814'
+    symbol: FIRSTCRY-EQ
+  - exchange: NSE
+    segment: 1
+    token: '15184'
+    symbol: BRIGADE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '628'
+    symbol: CESC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '20329'
+    symbol: CGCL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1250'
+    symbol: CASTROLIND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '21174'
+    symbol: CDSL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '637'
+    symbol: CHAMBLFERT-EQ
+  - exchange: NSE
+    segment: 1
+    token: '21740'
+    symbol: CHOLAHLDNG-EQ
+  - exchange: NSE
+    segment: 1
+    token: '5701'
+    symbol: CUB-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17945'
+    symbol: COHANCE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '342'
+    symbol: CAMS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '4421'
+    symbol: CREDITACC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17094'
+    symbol: CROMPTON-EQ
+  - exchange: NSE
+    segment: 1
+    token: '7358'
+    symbol: DATAPATTNS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '827'
+    symbol: DEEPAKFERT-EQ
+  - exchange: NSE
+    segment: 1
+    token: '9599'
+    symbol: DELHIVERY-EQ
+  - exchange: NSE
+    segment: 1
+    token: '5373'
+    symbol: DEVYANI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11654'
+    symbol: LALPATHLAB-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14304'
+    symbol: FSL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '12032'
+    symbol: FIVESTAR-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11573'
+    symbol: FORCEMOT-EQ
+  - exchange: NSE
+    segment: 1
+    token: '5475'
+    symbol: GRSE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1186'
+    symbol: GLAND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13409'
+    symbol: GPIL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13776'
+    symbol: GESHIP-EQ
+  - exchange: NSE
+    segment: 1
+    token: '5204'
+    symbol: GMDCLTD-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13966'
+    symbol: HBLENGINE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14334'
+    symbol: HSCL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17939'
+    symbol: HINDCOPPER-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1476'
+    symbol: IDBI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1491'
+    symbol: IFCI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11809'
+    symbol: IIFL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '4986'
+    symbol: IRCON-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1675'
+    symbol: ITI-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11262'
+    symbol: IGL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '7852'
+    symbol: INOXWIND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '28125'
+    symbol: IKS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11655'
+    symbol: JBMA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13637'
+    symbol: JMFINANCIL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '758460'
+    symbol: JSWCEMENT-EQ
+  - exchange: NSE
+    segment: 1
+    token: '21334'
+    symbol: JYOTICNC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1838'
+    symbol: KARURVYSYA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '12092'
+    symbol: KAYNES-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13260'
+    symbol: KEC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '13359'
+    symbol: KFINTECH-EQ
+  - exchange: NSE
+    segment: 1
+    token: '19061'
+    symbol: MANAPPURAM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '2283'
+    symbol: MRPL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '760229'
+    symbol: MEESHO-EQ
+  - exchange: NSE
+    segment: 1
+    token: '3918'
+    symbol: NATCOPHARM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '31415'
+    symbol: NBCC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11840'
+    symbol: NH-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14672'
+    symbol: NAVINFLUOR-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17433'
+    symbol: NETWEB-EQ
+  - exchange: NSE
+    segment: 1
+    token: '2406'
+    symbol: NEULANDLAB-EQ
+  - exchange: NSE
+    segment: 1
+    token: '18721'
+    symbol: NUVAMA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '24777'
+    symbol: OLAELEC-EQ
+  - exchange: NSE
+    segment: 1
+    token: '25358'
+    symbol: PGEL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '18908'
+    symbol: PNBHOUSING-EQ
+  - exchange: NSE
+    segment: 1
+    token: '759723'
+    symbol: PWL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '759820'
+    symbol: PINELABS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '759551'
+    symbol: PIRAMALFIN-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11571'
+    symbol: PPLPHARMA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11403'
+    symbol: POONAWALLA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '18391'
+    symbol: RBLBANK-EQ
+  - exchange: NSE
+    segment: 1
+    token: '14255'
+    symbol: REDINGTON-EQ
+  - exchange: NSE
+    segment: 1
+    token: '15259'
+    symbol: RPOWER-EQ
+  - exchange: NSE
+    segment: 1
+    token: '27052'
+    symbol: SAGILITY-EQ
+  - exchange: NSE
+    segment: 1
+    token: '27839'
+    symbol: SAILIFE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '17758'
+    symbol: SARDAEN-EQ
+  - exchange: NSE
+    segment: 1
+    token: '18743'
+    symbol: SIGNATURE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '4684'
+    symbol: SONACOMS-EQ
+  - exchange: NSE
+    segment: 1
+    token: '7083'
+    symbol: STARHEALTH-EQ
+  - exchange: NSE
+    segment: 1
+    token: '27095'
+    symbol: SWANCORP-EQ
+  - exchange: NSE
+    segment: 1
+    token: '10243'
+    symbol: SYNGENE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '3405'
+    symbol: TATACHEM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '20293'
+    symbol: TATATECH-EQ
+  - exchange: NSE
+    segment: 1
+    token: '759880'
+    symbol: TENNIND-EQ
+  - exchange: NSE
+    segment: 1
+    token: '2043'
+    symbol: RAMCOCEM-EQ
+  - exchange: NSE
+    segment: 1
+    token: '25584'
+    symbol: TRITURBINE-EQ
+  - exchange: NSE
+    segment: 1
+    token: '759084'
+    symbol: URBANCO-EQ
+  - exchange: NSE
+    segment: 1
+    token: '11821'
+    symbol: WELCORP-EQ
+  - exchange: NSE
+    segment: 1
+    token: '18011'
+    symbol: WHIRLPOOL-EQ
+  - exchange: NSE
+    segment: 1
+    token: '7506'
+    symbol: WOCKPHARMA-EQ
+  - exchange: NSE
+    segment: 1
+    token: '1076'
+    symbol: ZENSARTECH-EQ
 data:
   instrument_master_url: https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json
   historical_max_days: 365
