@@ -130,6 +130,25 @@ def run():
     sm  = SessionManager()
     obj = sm.login()
     tokens = sm.get_tokens()
+
+    # In live mode, size positions and risk limits off the broker's actual
+    # available balance rather than blindly trusting the static config value.
+    if mode == "live":
+        try:
+            rms = obj.rmsLimit()
+            data = rms.get("data", {}) if isinstance(rms, dict) else {}
+            live_balance = float(data.get("availablecash") or data.get("net") or 0)
+            if live_balance <= 0:
+                raise ValueError(f"RMS response had no usable balance: {rms}")
+            if abs(live_balance - capital) / capital > 0.10:
+                logger.warning(f"[Capital] Configured capital ₹{capital:,.0f} differs from live "
+                               f"account balance ₹{live_balance:,.0f} by >10% — using live balance.")
+            capital = live_balance
+            logger.info(f"[Capital] Using live account balance ₹{capital:,.0f} for sizing/risk limits.")
+        except Exception as exc:
+            logger.error(f"[Capital] Failed to fetch live account balance via RMS API: {exc} "
+                         f"— falling back to configured capital ₹{capital:,.0f}.")
+
     algo_logger.log_system("Session started — notification-only mode (TOP PICK ONLY)")
     alerter.send_session_start(mode, symbols, capital)
 
