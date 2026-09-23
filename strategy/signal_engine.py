@@ -60,6 +60,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
         max_atr_pct          : float = 100.0  (skip entries if ATR/close % is above this — too volatile/news-risk)
         adx_period           : int   = 14     (period for the ADX regime filter)
         min_adx              : float = 0.0    (skip entries if ADX is below this — choppy/non-trending regime; 0 = disabled)
+        min_ema_trend_factor : float = 0.0    (skip entries if the ema_trend confidence sub-factor is below this, out of 20; 0 = disabled)
     """
 
     def __init__(self, symbol: str, token: str, **kwargs) -> None:
@@ -89,6 +90,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self.max_atr_pct       = float(p.get("max_atr_pct",      100.0))
         self.adx_period        = int(p.get("adx_period",           14))
         self.min_adx           = float(p.get("min_adx",           0.0))
+        self.min_ema_trend_factor = float(p.get("min_ema_trend_factor", 0.0))
 
         # Session state
         self._position         = None     # None | "long" | "short"
@@ -211,6 +213,11 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 logger.debug(f"[{self.symbol}] LONG setup found but confidence too low: {score:.0f}")
                 return hold
 
+            if factors["ema_trend"] < self.min_ema_trend_factor:
+                logger.debug(f"[{self.symbol}] LONG setup found but trend too weak: "
+                             f"ema_trend={factors['ema_trend']:.1f}")
+                return hold
+
             self._position       = "long"
             self._entry_price    = close
             self._stop_loss      = sl
@@ -241,6 +248,11 @@ class ORBEMAVWAPStrategy(StrategyBase):
 
             if score < self.min_confidence:
                 logger.debug(f"[{self.symbol}] SHORT setup found but confidence too low: {score:.0f}")
+                return hold
+
+            if factors["ema_trend"] < self.min_ema_trend_factor:
+                logger.debug(f"[{self.symbol}] SHORT setup found but trend too weak: "
+                             f"ema_trend={factors['ema_trend']:.1f}")
                 return hold
 
             self._position       = "short"
