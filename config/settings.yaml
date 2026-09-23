@@ -5,6 +5,10 @@ trading:
   max_trades_per_day: 10
   candle_interval_minutes: 15
   square_off_time: '15:15'
+  # No new positions opened after this time — trades entered too late have
+  # little runway before square_off_time and tend to get flattened at a small
+  # loss regardless of signal quality. Existing open positions are unaffected.
+  new_entry_cutoff_time: '14:50'
   market_open: 09:15
   market_close: '15:30'
   # Master switch for automatic order placement. When false (default), the

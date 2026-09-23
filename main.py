@@ -223,6 +223,8 @@ def run():
     # 5. Session state
     # ------------------------------------------------------------------
     sq_off_h, sq_off_m  = map(int, trading_cfg["square_off_time"].split(":"))
+    new_entry_cutoff     = trading_cfg.get("new_entry_cutoff_time")
+    cutoff_h, cutoff_m   = map(int, new_entry_cutoff.split(":")) if new_entry_cutoff else (None, None)
     allow_after_hours   = bool(trading_cfg.get("allow_after_hours", False))
     if allow_after_hours:
         logger.warning("allow_after_hours=true — EOD square-off is disabled for WebSocket debugging.")
@@ -345,6 +347,12 @@ def run():
                     # Auto-execution (only when trading.auto_execute: true)
                     # ----------------------------------------------------
                     if auto_execute:
+                        if (cutoff_h is not None
+                                and (now.hour > cutoff_h or (now.hour == cutoff_h and now.minute >= cutoff_m))):
+                            logger.info(f"[AutoExec] Skipped {top_signal.symbol}: past new-entry cutoff "
+                                        f"({new_entry_cutoff}) — not enough runway before square-off.")
+                            alerter.send_order_skipped(top_signal.symbol, f"Past new-entry cutoff ({new_entry_cutoff})")
+                            continue
                         can, block_reason = breaker.can_trade()
                         if not can:
                             rotated = False
