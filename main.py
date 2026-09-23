@@ -137,6 +137,8 @@ def run():
     # With it off, order_mgr/position_mgr/sizer/breaker are never touched —
     # the loop below behaves exactly as it always has (alerts only).
     auto_execute = bool(trading_cfg.get("auto_execute", False))
+    allow_position_rotation = bool(trading_cfg.get("allow_position_rotation", False))
+    rotation_min_confidence = float(trading_cfg.get("rotation_min_confidence", 85))
     order_mgr    = OrderManager(smart_obj=obj) if auto_execute else None
     position_mgr = PositionManager() if auto_execute else None
     sizer        = PositionSizer(capital=capital, per_trade_risk_pct=risk_cfg["per_trade_risk_pct"]) if auto_execute else None
@@ -264,6 +266,30 @@ def run():
             pnl         = pnl,
         )
 
+    def _find_weakest_position() -> str | None:
+        """
+        Token of the open position closest to hitting its own stop-loss (smallest
+        fraction of initial risk remaining) — the rotation candidate to close out
+        in favor of a stronger new setup. Uses the strategy's live (post-breakeven/
+        trailing) stop rather than position_mgr's static entry-time stop.
+        """
+        weakest_token, weakest_frac = None, None
+        for pos in position_mgr.get_all_positions():
+            ltp = current_ltps.get(pos["token"], pos["entry_price"])
+            open_strat = strategies.get(pos["token"])
+            live_stop = open_strat.get_current_stop() if open_strat else None
+            stop = live_stop if live_stop is not None else pos["stop_loss"]
+            risk = abs(pos["entry_price"] - stop)
+            if risk <= 0:
+                continue
+            if pos["direction"] == "long":
+                frac_remaining = (ltp - stop) / risk
+            else:
+                frac_remaining = (stop - ltp) / risk
+            if weakest_frac is None or frac_remaining < weakest_frac:
+                weakest_token, weakest_frac = pos["token"], frac_remaining
+        return weakest_token
+
     # ------------------------------------------------------------------
     # 6. Main event loop
     # ------------------------------------------------------------------
@@ -332,9 +358,25 @@ def run():
                     if auto_execute:
                         can, block_reason = breaker.can_trade()
                         if not can:
-                            logger.warning(f"[AutoExec] Skipped {top_signal.symbol}: {block_reason}")
-                            alerter.send_order_skipped(top_signal.symbol, block_reason)
-                            continue
+                            rotated = False
+                            if (allow_position_rotation
+                                    and "Max concurrent positions" in block_reason
+                                    and top_signal.confidence >= rotation_min_confidence):
+                                weakest_token = _find_weakest_position()
+                                if weakest_token and weakest_token != top_signal.token:
+                                    weakest_pos = position_mgr.get_position(weakest_token)
+                                    ltp = current_ltps.get(weakest_token, weakest_pos["entry_price"])
+                                    logger.info(f"[Rotation] Closing {weakest_pos['symbol']} "
+                                                f"(nearest to stop) to free a slot for "
+                                                f"{top_signal.symbol} (confidence={top_signal.confidence:.0f})")
+                                    _handle_exit(weakest_token, weakest_pos["symbol"], weakest_pos["direction"],
+                                                 ltp, weakest_pos["entry_price"], "Rotated out for higher-confidence setup")
+                                    can, block_reason = breaker.can_trade()
+                                    rotated = can
+                            if not rotated and not can:
+                                logger.warning(f"[AutoExec] Skipped {top_signal.symbol}: {block_reason}")
+                                alerter.send_order_skipped(top_signal.symbol, block_reason)
+                                continue
                         if position_mgr.has_position(top_signal.token):
                             logger.warning(f"[AutoExec] Already in a position for {top_signal.symbol} — skipping.")
                             alerter.send_order_skipped(top_signal.symbol, "Already in a position for this symbol")

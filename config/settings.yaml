@@ -1,7 +1,7 @@
 trading:
   mode: paper
   capital: 25000
-  max_concurrent_positions: 3
+  max_concurrent_positions: 5
   max_trades_per_day: 10
   candle_interval_minutes: 15
   square_off_time: '15:15'
@@ -16,6 +16,13 @@ trading:
   # TEMP: keep the live feed running after square-off so we can debug WebSocket
   # outside market hours. Set back to false for normal sessions.
   allow_after_hours: false
+  # Opt-in: when all max_concurrent_positions slots are full and a new signal
+  # arrives with confidence >= rotation_min_confidence, close the weakest open
+  # position (the one closest to hitting its own stop-loss) to free a slot for
+  # it, instead of just skipping the new setup. Off by default — test in paper
+  # mode first, since forcing an early exit has real opportunity-cost risk.
+  allow_position_rotation: false
+  rotation_min_confidence: 85
 risk:
   per_trade_risk_pct: 1.0
   daily_loss_limit_pct: 2.0
