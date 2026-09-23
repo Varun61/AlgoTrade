@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from strategy.indicators import ema, rsi, atr, vwap, opening_range, ema_crossover
+from strategy.indicators import ema, rsi, atr, vwap, opening_range, ema_crossover, adx
 
 
 # ----------------------------------------------------------------------
@@ -65,6 +65,40 @@ def test_rsi_bounded_0_100_for_noisy_series():
     rng = np.random.default_rng(3)
     s = pd.Series(100 + np.cumsum(rng.normal(0, 1, 200)))
     result = rsi(s, 14).dropna()
+    assert (result >= 0).all() and (result <= 100).all()
+
+
+# ----------------------------------------------------------------------
+# ADX
+# ----------------------------------------------------------------------
+
+def test_adx_strong_trend_is_high():
+    """A steady, one-directional move should register a high ADX (>25 trending threshold)."""
+    n = 60
+    close = pd.Series([100.0 + i * 0.8 for i in range(n)])
+    high  = close + 0.3
+    low   = close - 0.3
+    result = adx(high, low, close, period=14).dropna()
+    assert result.iloc[-1] > 25
+
+
+def test_adx_choppy_sideways_is_low():
+    """A flat, oscillating series (no net directional movement) should register low ADX."""
+    n = 60
+    base = np.array([100.0, 100.5, 100.0, 99.5] * (n // 4))
+    close = pd.Series(base)
+    high  = close + 0.2
+    low   = close - 0.2
+    result = adx(high, low, close, period=14).dropna()
+    assert result.iloc[-1] < 25
+
+
+def test_adx_bounded_0_100():
+    rng = np.random.default_rng(7)
+    close = pd.Series(100 + np.cumsum(rng.normal(0, 1, 200)))
+    high  = close + rng.uniform(0.1, 1.0, 200)
+    low   = close - rng.uniform(0.1, 1.0, 200)
+    result = adx(high, low, close, period=14).dropna()
     assert (result >= 0).all() and (result <= 100).all()
 
 

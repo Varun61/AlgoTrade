@@ -185,6 +185,7 @@ def run():
             max_holding_candles = strategy_cfg.get("max_holding_candles", 0),
             min_atr_pct         = strategy_cfg.get("min_atr_pct", 0.0),
             max_atr_pct         = strategy_cfg.get("max_atr_pct", 100.0),
+            min_adx             = strategy_cfg.get("min_adx", 0.0),
         )
         strategies[token] = strat
 

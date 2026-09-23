@@ -282,3 +282,29 @@ def test_volatility_gate_allows_when_disabled():
     sig = strat.on_candle_close(history.iloc[-1], history)
     assert sig.signal == Signal.BUY
     assert 0.0 <= sig.confidence <= 100.0
+
+
+def test_regime_gate_blocks_when_adx_too_low():
+    history = _make_breakout_history()
+    strat = make_strategy(
+        candle_minutes=1, orb_minutes=1, ema_fast=2, ema_slow=4,
+        rsi_period=4, rsi_overbought=99.5, rsi_oversold=5, atr_period=4,
+        vwap_filter=False, min_confidence=0.0, volume_avg_periods=4,
+        breakeven_r=100.0, trail_atr_mult=100.0, max_holding_candles=0,
+        adx_period=4, min_adx=99.0,   # unrealistically high -> must block every setup
+    )
+    sig = strat.on_candle_close(history.iloc[-1], history)
+    assert sig.signal == Signal.HOLD
+
+
+def test_regime_gate_allows_when_disabled():
+    history = _make_breakout_history()
+    strat = make_strategy(
+        candle_minutes=1, orb_minutes=1, ema_fast=2, ema_slow=4,
+        rsi_period=4, rsi_overbought=99.5, rsi_oversold=5, atr_period=4,
+        vwap_filter=False, min_confidence=0.0, volume_avg_periods=4,
+        breakeven_r=100.0, trail_atr_mult=100.0, max_holding_candles=0,
+        min_adx=0.0,
+    )
+    sig = strat.on_candle_close(history.iloc[-1], history)
+    assert sig.signal == Signal.BUY

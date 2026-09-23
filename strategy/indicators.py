@@ -103,6 +103,31 @@ def vwap(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -
 
 
 # ------------------------------------------------------------------
+# ADX (trend strength, Wilder smoothing)
+# ------------------------------------------------------------------
+
+def adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """
+    Average Directional Index — trend-strength regime filter.
+    >= ~25 conventionally indicates a trending market; below suggests chop.
+    Returns values in [0, 100] (NaN for the initial warm-up bars).
+    """
+    up_move   = high.diff()
+    down_move = -low.diff()
+
+    plus_dm  = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=high.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=high.index)
+
+    tr_val = atr(high, low, close, period) # already Wilder-smoothed true range
+
+    plus_di  = 100 * plus_dm.ewm(alpha=1/period, adjust=False).mean() / tr_val.replace(0, np.nan)
+    minus_di = 100 * minus_dm.ewm(alpha=1/period, adjust=False).mean() / tr_val.replace(0, np.nan)
+
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    return dx.ewm(alpha=1/period, adjust=False).mean()
+
+
+# ------------------------------------------------------------------
 # Opening Range (ORB)
 # ------------------------------------------------------------------
 

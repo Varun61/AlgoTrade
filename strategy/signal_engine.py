@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from .strategy_base import StrategyBase, TradeSignal, Signal
-from .indicators    import ema, rsi, atr, vwap, opening_range
+from .indicators    import ema, rsi, atr, vwap, opening_range, adx
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,8 @@ class ORBEMAVWAPStrategy(StrategyBase):
         early_cut_min_r      : float = 0.3    (R-multiple threshold below which a trade is considered "stalled")
         min_atr_pct          : float = 0.0    (skip entries if ATR/close % is below this — too illiquid/choppy)
         max_atr_pct          : float = 100.0  (skip entries if ATR/close % is above this — too volatile/news-risk)
+        adx_period           : int   = 14     (period for the ADX regime filter)
+        min_adx              : float = 0.0    (skip entries if ADX is below this — choppy/non-trending regime; 0 = disabled)
     """
 
     def __init__(self, symbol: str, token: str, **kwargs) -> None:
@@ -85,6 +87,8 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self.early_cut_min_r   = float(p.get("early_cut_min_r",  0.3))
         self.min_atr_pct       = float(p.get("min_atr_pct",        0.0))
         self.max_atr_pct       = float(p.get("max_atr_pct",      100.0))
+        self.adx_period        = int(p.get("adx_period",           14))
+        self.min_adx           = float(p.get("min_adx",           0.0))
 
         # Session state
         self._position         = None     # None | "long" | "short"
@@ -143,6 +147,8 @@ class ORBEMAVWAPStrategy(StrategyBase):
         n = len(history)
         min_bars = max(self.orb_candles + 1, self.ema_slow + 5,
                        self.rsi_period + 2, self.vol_avg_periods + 1)
+        if self.min_adx > 0:
+            min_bars = max(min_bars, self.adx_period + 2)
         if n < min_bars:
             return hold
 
@@ -180,6 +186,12 @@ class ORBEMAVWAPStrategy(StrategyBase):
         atr_pct = (atr_val / close * 100) if close else 0.0
         if not (self.min_atr_pct <= atr_pct <= self.max_atr_pct):
             return hold
+
+        # === Regime gate — skip entries when ADX shows a non-trending/choppy market ===
+        if self.min_adx > 0:
+            adx_val = adx(highs, lows, closes, self.adx_period).iloc[-1]
+            if pd.isna(adx_val) or adx_val < self.min_adx:
+                return hold
 
         # === ENTRY checks ===
         vwap_ok_long  = (close > vwap_v) if self.vwap_filter else True
