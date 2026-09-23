@@ -64,18 +64,21 @@ def _log_alert(record: dict) -> None:
 
 async def _send_async(message: str) -> None:
     import telegram  # type: ignore
-    async with telegram.Bot(token=_BOT_TOKEN) as bot:
+    from telegram.request import HTTPXRequest  # type: ignore
+    request = HTTPXRequest(connect_timeout=10.0, read_timeout=15.0, write_timeout=15.0)
+    async with telegram.Bot(token=_BOT_TOKEN, request=request) as bot:
         await bot.send_message(chat_id=_CHAT_ID, text=message, parse_mode="HTML")
 
 
 def _send_sync(message: str) -> None:
-    """Send a Telegram message synchronously."""
+    """Send a Telegram message synchronously, retrying once on transient failure."""
     if _BOT_TOKEN and _CHAT_ID:
-        try:
-            asyncio.run(_send_async(message))
-            return
-        except Exception as exc:
-            logger.error(f"[Alerts] Telegram send failed: {exc}")
+        for attempt in (1, 2):
+            try:
+                asyncio.run(_send_async(message))
+                return
+            except Exception as exc:
+                logger.error(f"[Alerts] Telegram send failed (attempt {attempt}/2): {exc}")
 
     # Fallback: print to console
     print(f"\n{'='*60}\n[ALERT] {message}\n{'='*60}\n")
