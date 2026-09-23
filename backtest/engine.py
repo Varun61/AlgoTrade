@@ -37,7 +37,7 @@ class BacktestConfig:
     capital          : float = 100_000.0
     per_trade_risk   : float = 1.0       # % of capital
     slippage_pct     : float = 0.05      # 0.05% slippage on entry
-    brokerage_per_lot: float = 40.0      # ₹ per order (adjust for your plan)
+    brokerage_per_lot: float = 20.0      # ₹ per round-trip trade (confirmed actual plan cost)
     daily_loss_limit : float = 2.0
     max_trades_day   : int   = 10
     max_concurrent   : int   = 3
