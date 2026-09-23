@@ -8,7 +8,7 @@ trading:
   # No new positions opened after this time — trades entered too late have
   # little runway before square_off_time and tend to get flattened at a small
   # loss regardless of signal quality. Existing open positions are unaffected.
-  new_entry_cutoff_time: '14:50'
+  new_entry_cutoff_time: '13:00'
   market_open: 09:15
   market_close: '15:30'
   # Master switch for automatic order placement. When false (default), the
@@ -43,11 +43,12 @@ strategy:
   rsi_oversold: 30
   atr_period: 14
   vwap_filter: true
+  min_confidence: 75         # skip entries scoring below this (default was 70, the bare-minimum threshold)
   # Risk management add-ons (all optional, safe defaults preserve old behavior)
   breakeven_r: 1.0           # move stop to breakeven once price moves 1R in our favor
   trail_atr_mult: 1.0        # once breakeven, trail stop by 1x ATR behind price
-  max_holding_candles: 12    # force exit after 12 candles (3 hours on 15-min bars) if still open
-  early_cut_candles: 5       # if still below early_cut_min_r after 5 candles, cut early (frees capital instead of waiting out max_holding_candles)
+  max_holding_candles: 8     # force exit after 8 candles (2 hours on 15-min bars) if still open
+  early_cut_candles: 3       # if still below early_cut_min_r after 3 candles, cut early (frees capital instead of waiting out max_holding_candles)
   early_cut_min_r: 0.3       # R-multiple threshold below which a trade is considered stalled
   min_atr_pct: 0.15          # skip entries when ATR/close% is below this (too illiquid/choppy)
   max_atr_pct: 3.0           # skip entries when ATR/close% is above this (news/event volatility)
