@@ -6,12 +6,12 @@ trading:
   candle_interval_minutes: 15
   square_off_time: '15:15'
   new_entry_cutoff_time: '13:00'
-  market_open: 09:15
+  market_open: '09:15'
   market_close: '15:30'
   auto_execute: true
   allow_after_hours: false
   allow_position_rotation: true
-  rotation_min_confidence: 92
+  rotation_min_confidence: 77  # was 92; -15 offset compensates for removed rr_ratio factor
 market_regime:
   enabled: false
   min_market_adx: 18.0
@@ -33,7 +33,7 @@ strategy:
   rsi_oversold: 30
   atr_period: 14
   vwap_filter: true
-  min_confidence: 75
+  min_confidence: 60  # was 75; -15 offset compensates for removed rr_ratio factor
   breakeven_r: 1.0
   trail_atr_mult: 1.0
   max_holding_candles: 8

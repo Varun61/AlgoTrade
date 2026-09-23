@@ -65,6 +65,12 @@ def compute_market_regime(
     return True, f"Nifty ADX={adx_val:.1f}, VIX={vix_value if vix_value is not None else 'n/a'} — favorable regime"
 
 
+# Confirmed against Angel One's OpenAPIScripMaster (exch_seg=NSE, instrumenttype=AMXIDX):
+# "Nifty 50" -> 99926000, "India VIX" -> 99926017. These index tokens are static.
+NIFTY_50_TOKEN  = "99926000"
+INDIA_VIX_TOKEN = "99926017"
+
+
 def fetch_market_regime_inputs(
     smart_obj,
     instrument_df: pd.DataFrame,
@@ -82,7 +88,7 @@ def fetch_market_regime_inputs(
     vix_value = None
 
     try:
-        nifty_token = get_token(instrument_df, "Nifty 50", "NSE")
+        nifty_token = NIFTY_50_TOKEN or get_token(instrument_df, "Nifty 50", "NSE")
         if nifty_token:
             to_date = datetime.now()
             from_date = to_date - timedelta(days=lookback_days * 2)  # pad for weekends/holidays
@@ -91,7 +97,7 @@ def fetch_market_regime_inputs(
         logger.warning(f"[MarketRegime] Failed to fetch Nifty 50 history: {exc}")
 
     try:
-        vix_token = get_token(instrument_df, "India VIX", "NSE")
+        vix_token = INDIA_VIX_TOKEN or get_token(instrument_df, "India VIX", "NSE")
         if vix_token:
             quote = smart_obj.ltpData("NSE", "India VIX", vix_token)
             if quote and quote.get("status") and quote.get("data"):

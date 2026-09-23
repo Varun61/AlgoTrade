@@ -169,19 +169,19 @@ def run():
     # default until validated over a few live paper sessions, same rollout
     # discipline used for position rotation. When disabled, only logs what
     # it WOULD have decided, without blocking any entries.
+    #
+    # The fetch+compute is deferred until shortly after market open (see main
+    # loop below) — India VIX is derived from live options order-book data
+    # starting at market open, so calling it pre-market (this function starts
+    # ~9:00 AM, before the 9:15 open) would just return yesterday's frozen
+    # closing print for the entire day's regime decision.
     from risk.market_regime import compute_market_regime, fetch_market_regime_inputs
     regime_cfg = cfg.get("market_regime", {})
     regime_enabled = bool(regime_cfg.get("enabled", False))
     market_regime_ok = True
-    nifty_daily, vix_value = fetch_market_regime_inputs(obj, instrument_df, fetcher)
-    market_regime_ok, market_regime_reason = compute_market_regime(
-        nifty_daily, vix_value,
-        min_market_adx=float(regime_cfg.get("min_market_adx", 18.0)),
-        max_vix=float(regime_cfg.get("max_vix", 20.0)),
-    )
-    logger.info(f"[MarketRegime] {'ENFORCED' if regime_enabled else 'observe-only'} — {market_regime_reason}")
-    if not regime_enabled:
-        market_regime_ok = True   # observe-only: never actually block entries
+    market_regime_reason = "Not yet checked (pre-market)"
+    regime_checked_live = False
+    market_open_h, market_open_m = map(int, str(trading_cfg.get("market_open", "09:15")).split(":"))
     strategies = {}    # token -> ORBEMAVWAPStrategy
     histories  = {}    # token -> pd.DataFrame
 
@@ -318,6 +318,20 @@ def run():
                 break
 
             now = datetime.now()
+
+            # One-time, authoritative market-regime fetch — deferred to 2 min
+            # after market open so India VIX reflects today's live reading.
+            if not regime_checked_live and (now.hour * 60 + now.minute) >= (market_open_h * 60 + market_open_m + 2):
+                nifty_daily, vix_value = fetch_market_regime_inputs(obj, instrument_df, fetcher)
+                market_regime_ok, market_regime_reason = compute_market_regime(
+                    nifty_daily, vix_value,
+                    min_market_adx=float(regime_cfg.get("min_market_adx", 18.0)),
+                    max_vix=float(regime_cfg.get("max_vix", 20.0)),
+                )
+                if not regime_enabled:
+                    market_regime_ok = True   # observe-only: never actually block entries
+                logger.info(f"[MarketRegime] {'ENFORCED' if regime_enabled else 'observe-only'} — {market_regime_reason}")
+                regime_checked_live = True
 
             # "No setup found" message
             if (not no_setup_alert_sent
