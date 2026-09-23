@@ -140,7 +140,10 @@ def run():
     allow_position_rotation = bool(trading_cfg.get("allow_position_rotation", False))
     rotation_min_confidence = float(trading_cfg.get("rotation_min_confidence", 85))
     order_mgr    = OrderManager(smart_obj=obj) if auto_execute else None
-    position_mgr = PositionManager() if auto_execute else None
+    position_mgr = PositionManager(
+        brokerage_pct=risk_cfg.get("brokerage_pct", 0.03),
+        brokerage_cap=risk_cfg.get("brokerage_cap", 20.0),
+    ) if auto_execute else None
     sizer        = PositionSizer(
         capital=capital, per_trade_risk_pct=risk_cfg["per_trade_risk_pct"],
         max_position_value=capital * risk_cfg.get("max_position_value_pct", 50.0) / 100,
@@ -258,7 +261,8 @@ def run():
     if allow_after_hours:
         logger.warning("allow_after_hours=true — EOD square-off is disabled for WebSocket debugging.")
     no_setup_alert_sent = False    
-    alerted_tokens      = set()    # Prevent duplicate alerts
+    alerted_tokens      = set()    # Prevent duplicate Telegram alerts for the same setup
+    locked_tokens       = set()    # Setups we've fully given up on for today (executed, or non-retryable skip)
     alerted_directions  : dict[str, str] = {}  # token -> "long"/"short" for entries actually alerted
     current_ltps        : dict[str, float] = {}
 
@@ -283,6 +287,7 @@ def run():
                 symbol=pos["symbol"], token=token,
                 exchange=token_exchange.get(token, "NSE"),
                 transaction=exit_txn, qty=pos["qty"], order_type="MARKET",
+                client_ref=f"{token}_{exit_txn}_exit_{datetime.now().strftime('%Y%m%d')}",
             )
             pnl = position_mgr.close_position(token, exit_price, exit_order_id or "")
             breaker.on_trade_close(pnl)
@@ -353,6 +358,7 @@ def run():
                             symbol=pos["symbol"], token=pos["token"],
                             exchange=token_exchange.get(pos["token"], "NSE"),
                             transaction=exit_txn, qty=pos["qty"], order_type="MARKET",
+                            client_ref=f"{pos['token']}_{exit_txn}_eod_{now.strftime('%Y%m%d')}",
                         )
                         pnl = position_mgr.close_position(pos["token"], ltp, exit_order_id or "")
                         breaker.on_trade_close(pnl)
@@ -378,78 +384,91 @@ def run():
                 algo_logger.log_system(f"Sent Top {len(top_signals)} Picks", {"ignored_count": ignored_count})
 
                 for top_signal in top_signals:
-                    # Mark as alerted so we don't resend it today
                     alert_key = f"{top_signal.token}_{top_signal.signal.value}_{top_signal.entry_window_mins}"
-                    alerted_tokens.add(alert_key)
+
+                    # Send the Telegram alert only once per setup — avoids re-notifying
+                    # every candle while we keep retrying a transiently-blocked entry below.
+                    if alert_key not in alerted_tokens:
+                        alerted_tokens.add(alert_key)
+                        alerter.send_trade_alert(top_signal)
                     alerted_directions[top_signal.token] = "long" if top_signal.signal == Signal.BUY else "short"
-                    
-                    # Send Alert
-                    alerter.send_trade_alert(top_signal)
 
                     # ----------------------------------------------------
                     # Auto-execution (only when trading.auto_execute: true)
                     # ----------------------------------------------------
-                    if auto_execute:
-                        if not market_regime_ok:
-                            logger.info(f"[AutoExec] Skipped {top_signal.symbol}: {market_regime_reason}")
-                            alerter.send_order_skipped(top_signal.symbol, f"Unfavorable market regime: {market_regime_reason}")
-                            continue
-                        if (cutoff_h is not None
-                                and (now.hour > cutoff_h or (now.hour == cutoff_h and now.minute >= cutoff_m))):
-                            logger.info(f"[AutoExec] Skipped {top_signal.symbol}: past new-entry cutoff "
-                                        f"({new_entry_cutoff}) — not enough runway before square-off.")
-                            alerter.send_order_skipped(top_signal.symbol, f"Past new-entry cutoff ({new_entry_cutoff})")
-                            continue
-                        can, block_reason = breaker.can_trade()
-                        if not can:
-                            rotated = False
-                            if (allow_position_rotation
-                                    and "Max concurrent positions" in block_reason
-                                    and top_signal.confidence >= rotation_min_confidence):
-                                weakest_token = _find_weakest_position()
-                                if weakest_token and weakest_token != top_signal.token:
-                                    weakest_pos = position_mgr.get_position(weakest_token)
-                                    ltp = current_ltps.get(weakest_token, weakest_pos["entry_price"])
-                                    logger.info(f"[Rotation] Closing {weakest_pos['symbol']} "
-                                                f"(nearest to stop) to free a slot for "
-                                                f"{top_signal.symbol} (confidence={top_signal.confidence:.0f})")
-                                    _handle_exit(weakest_token, weakest_pos["symbol"], weakest_pos["direction"],
-                                                 ltp, weakest_pos["entry_price"], "Rotated out for higher-confidence setup")
-                                    can, block_reason = breaker.can_trade()
-                                    rotated = can
-                            if not rotated and not can:
-                                logger.warning(f"[AutoExec] Skipped {top_signal.symbol}: {block_reason}")
-                                alerter.send_order_skipped(top_signal.symbol, block_reason)
-                                continue
-                        if position_mgr.has_position(top_signal.token):
-                            logger.warning(f"[AutoExec] Already in a position for {top_signal.symbol} — skipping.")
-                            alerter.send_order_skipped(top_signal.symbol, "Already in a position for this symbol")
-                            continue
+                    if not auto_execute:
+                        locked_tokens.add(alert_key)   # alert-only mode — nothing to retry
+                        continue
 
-                        qty = sizer.compute_qty(top_signal.entry_price, top_signal.stop_loss)
-                        if qty <= 0:
-                            logger.warning(f"[AutoExec] Qty computed as 0 for {top_signal.symbol} — skipping.")
-                            alerter.send_order_skipped(top_signal.symbol, "Computed qty was 0 (stop distance too tight for risk budget)")
+                    if not market_regime_ok:
+                        logger.info(f"[AutoExec] Skipped {top_signal.symbol}: {market_regime_reason}")
+                        alerter.send_order_skipped(top_signal.symbol, f"Unfavorable market regime: {market_regime_reason}")
+                        locked_tokens.add(alert_key)   # session-level regime verdict won't change today
+                        continue
+                    if (cutoff_h is not None
+                            and (now.hour > cutoff_h or (now.hour == cutoff_h and now.minute >= cutoff_m))):
+                        logger.info(f"[AutoExec] Skipped {top_signal.symbol}: past new-entry cutoff "
+                                    f"({new_entry_cutoff}) — not enough runway before square-off.")
+                        alerter.send_order_skipped(top_signal.symbol, f"Past new-entry cutoff ({new_entry_cutoff})")
+                        locked_tokens.add(alert_key)   # cutoff only gets further away, never retryable
+                        continue
+                    can, block_reason = breaker.can_trade()
+                    if not can:
+                        rotated = False
+                        if (allow_position_rotation
+                                and "Max concurrent positions" in block_reason
+                                and top_signal.confidence >= rotation_min_confidence):
+                            weakest_token = _find_weakest_position()
+                            if weakest_token and weakest_token != top_signal.token:
+                                weakest_pos = position_mgr.get_position(weakest_token)
+                                ltp = current_ltps.get(weakest_token, weakest_pos["entry_price"])
+                                logger.info(f"[Rotation] Closing {weakest_pos['symbol']} "
+                                            f"(nearest to stop) to free a slot for "
+                                            f"{top_signal.symbol} (confidence={top_signal.confidence:.0f})")
+                                _handle_exit(weakest_token, weakest_pos["symbol"], weakest_pos["direction"],
+                                             ltp, weakest_pos["entry_price"], "Rotated out for higher-confidence setup")
+                                can, block_reason = breaker.can_trade()
+                                rotated = can
+                        if not rotated and not can:
+                            logger.warning(f"[AutoExec] Skipped {top_signal.symbol}: {block_reason}")
+                            alerter.send_order_skipped(top_signal.symbol, block_reason)
+                            # Room ("Max concurrent positions") can free up later today — retryable.
+                            # Daily halt/cap reasons (loss limit, max trades/day, consecutive losses) won't change.
+                            if "Max concurrent positions" not in block_reason:
+                                locked_tokens.add(alert_key)
                             continue
+                    if position_mgr.has_position(top_signal.token):
+                        logger.warning(f"[AutoExec] Already in a position for {top_signal.symbol} — skipping.")
+                        alerter.send_order_skipped(top_signal.symbol, "Already in a position for this symbol")
+                        continue
 
-                        txn = "BUY" if top_signal.signal == Signal.BUY else "SELL"
-                        order_id = order_mgr.place_order(
+                    qty = sizer.compute_qty(top_signal.entry_price, top_signal.stop_loss)
+                    if qty <= 0:
+                        logger.warning(f"[AutoExec] Qty computed as 0 for {top_signal.symbol} — skipping.")
+                        alerter.send_order_skipped(top_signal.symbol, "Computed qty was 0 (stop distance too tight for risk budget)")
+                        continue
+
+                    txn = "BUY" if top_signal.signal == Signal.BUY else "SELL"
+                    order_id = order_mgr.place_order(
+                        symbol=top_signal.symbol, token=top_signal.token,
+                        exchange=token_exchange.get(top_signal.token, "NSE"),
+                        transaction=txn, qty=qty, order_type="MARKET",
+                        client_ref=f"{top_signal.token}_{txn}_{now.strftime('%Y%m%d')}",
+                    )
+                    if order_id:
+                        position_mgr.open_position(
                             symbol=top_signal.symbol, token=top_signal.token,
-                            exchange=token_exchange.get(top_signal.token, "NSE"),
-                            transaction=txn, qty=qty, order_type="MARKET",
+                            direction="long" if txn == "BUY" else "short",
+                            qty=qty, entry_price=top_signal.entry_price,
+                            stop_loss=top_signal.stop_loss, target=top_signal.target,
+                            order_id=order_id,
                         )
-                        if order_id:
-                            position_mgr.open_position(
-                                symbol=top_signal.symbol, token=top_signal.token,
-                                direction="long" if txn == "BUY" else "short",
-                                qty=qty, entry_price=top_signal.entry_price,
-                                stop_loss=top_signal.stop_loss, target=top_signal.target,
-                                order_id=order_id,
-                            )
-                            breaker.on_trade_open()
-                            alerter.send_order_placed(order_id, top_signal, qty)
-                        else:
-                            alerter.send_order_failed(top_signal.symbol, "OrderManager.place_order returned None")
+                        breaker.on_trade_open()
+                        alerter.send_order_placed(order_id, top_signal, qty)
+                        locked_tokens.add(alert_key)   # executed — one trade per direction per symbol per day
+                    else:
+                        alerter.send_order_failed(top_signal.symbol, "OrderManager.place_order returned None")
+                        # transient API failure — leave unlocked, retry next candle
 
                 # Reset buffer
                 signal_buffer.clear()
@@ -527,8 +546,8 @@ def run():
                 # the same trade direction for the same token all day
                 alert_key = f"{token}_{signal.signal.value}_{signal.entry_window_mins}"
                 
-                if alert_key in alerted_tokens:
-                    continue  # Already traded this today
+                if alert_key in locked_tokens:
+                    continue  # Already executed, or given up on for a non-retryable reason today
                 
                 # Add to our ranking buffer
                 signal_buffer.append(signal)

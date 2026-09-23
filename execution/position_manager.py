@@ -28,9 +28,16 @@ logger = logging.getLogger(__name__)
 class PositionManager:
     """
     Maintains the current open positions and realized P&L for the session.
+
+    Args:
+        brokerage_pct: % of order value charged per executed order (entry + exit).
+        brokerage_cap: max brokerage per order, in ₹. Defaults to 0 (no cost modeled)
+                       so existing callers/tests that don't pass these are unaffected.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, brokerage_pct: float = 0.0, brokerage_cap: float = float("inf")) -> None:
+        self.brokerage_pct = brokerage_pct
+        self.brokerage_cap = brokerage_cap
         self._positions: dict[str, dict] = {}   # token -> position
         self._realized_pnl: float = 0.0
         self._closed_trades: list[dict] = []
@@ -71,7 +78,7 @@ class PositionManager:
 
     def close_position(self, token: str, exit_price: float, order_id: str) -> float:
         """
-        Record position close. Returns realized P&L for this trade.
+        Record position close. Returns realized P&L (net of brokerage) for this trade.
         """
         pos = self._positions.pop(token, None)
         if pos is None:
@@ -80,19 +87,28 @@ class PositionManager:
 
         qty = pos["qty"]
         if pos["direction"] == "long":
-            pnl = (exit_price - pos["entry_price"]) * qty
+            gross_pnl = (exit_price - pos["entry_price"]) * qty
         else:
-            pnl = (pos["entry_price"] - exit_price) * qty
+            gross_pnl = (pos["entry_price"] - exit_price) * qty
 
-        pos["realized_pnl"] = pnl
-        pos["exit_order_id"] = order_id
-        self._realized_pnl  += pnl
+        brokerage = (self._order_brokerage(pos["entry_price"] * qty)
+                     + self._order_brokerage(exit_price * qty))
+        pnl = gross_pnl - brokerage
+
+        pos["gross_pnl"]      = gross_pnl
+        pos["brokerage"]      = brokerage
+        pos["realized_pnl"]   = pnl
+        pos["exit_order_id"]  = order_id
+        self._realized_pnl   += pnl
         self._closed_trades.append(pos)
 
         emoji = "✅" if pnl >= 0 else "❌"
-        logger.info(f"[PositionMgr] {emoji} Closed {pos['symbol']} | P&L=₹{pnl:.2f} "
+        logger.info(f"[PositionMgr] {emoji} Closed {pos['symbol']} | P&L=₹{pnl:.2f} (gross ₹{gross_pnl:.2f} − brokerage ₹{brokerage:.2f}) "
                     f"| Entry={pos['entry_price']:.2f} Exit={exit_price:.2f}")
         return pnl
+
+    def _order_brokerage(self, order_value: float) -> float:
+        return min(order_value * self.brokerage_pct / 100, self.brokerage_cap)
 
     # ------------------------------------------------------------------
     # Queries
