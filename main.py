@@ -335,11 +335,15 @@ def run():
             if signal_buffer and time.time() >= buffer_flush_time:
                 # Sort signals by confidence (highest first)
                 signal_buffer.sort(key=lambda s: s.confidence, reverse=True)
-                
-                # Pick Top 2
-                top_signals = signal_buffer[:2]
+
+                # Pick as many top signals as open slots allow (floor of 2 so we
+                # still rank/report picks even when auto_execute is off or slots
+                # are momentarily full — downstream gating handles the actual skip).
+                available_room = breaker.max_concurrent - position_mgr.open_count()
+                n_picks = max(2, available_room)
+                top_signals = signal_buffer[:n_picks]
                 ignored_count = len(signal_buffer) - len(top_signals)
-                
+
                 logger.info(f"🏆 TOP {len(top_signals)} PICK(S) SELECTED. Ignored {ignored_count} other setups.")
                 algo_logger.log_system(f"Sent Top {len(top_signals)} Picks", {"ignored_count": ignored_count})
 

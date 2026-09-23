@@ -47,7 +47,7 @@ strategy:
   early_cut_min_r: 0.3       # R-multiple threshold below which a trade is considered stalled
   min_atr_pct: 0.15          # skip entries when ATR/close% is below this (too illiquid/choppy)
   max_atr_pct: 3.0           # skip entries when ATR/close% is above this (news/event volatility)
-  min_adx: 20                 # regime filter: skip entries when ADX is below this (choppy/non-trending); 0 = disabled
+  min_adx: 0                 # regime filter: skip entries when ADX is below this (choppy/non-trending); 0 = disabled
 watchlist:
   instruments:
   - exchange: NSE
