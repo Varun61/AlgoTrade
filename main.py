@@ -155,14 +155,33 @@ def run():
     # ------------------------------------------------------------------
     # 2. Instrument master
     # ------------------------------------------------------------------
-    download_instrument_master()
+    instrument_df = download_instrument_master()
 
     # ------------------------------------------------------------------
     # 3. Strategies + warm-up
     # ------------------------------------------------------------------
     fetcher    = HistoricalFetcher(obj)
+
+    # Market-wide regime gate (Nifty trend strength + India VIX) — off by
+    # default until validated over a few live paper sessions, same rollout
+    # discipline used for position rotation. When disabled, only logs what
+    # it WOULD have decided, without blocking any entries.
+    from risk.market_regime import compute_market_regime, fetch_market_regime_inputs
+    regime_cfg = cfg.get("market_regime", {})
+    regime_enabled = bool(regime_cfg.get("enabled", False))
+    market_regime_ok = True
+    nifty_daily, vix_value = fetch_market_regime_inputs(obj, instrument_df, fetcher)
+    market_regime_ok, market_regime_reason = compute_market_regime(
+        nifty_daily, vix_value,
+        min_market_adx=float(regime_cfg.get("min_market_adx", 18.0)),
+        max_vix=float(regime_cfg.get("max_vix", 20.0)),
+    )
+    logger.info(f"[MarketRegime] {'ENFORCED' if regime_enabled else 'observe-only'} — {market_regime_reason}")
+    if not regime_enabled:
+        market_regime_ok = True   # observe-only: never actually block entries
     strategies = {}    # token -> ORBEMAVWAPStrategy
     histories  = {}    # token -> pd.DataFrame
+
 
     for inst in watchlist:
         token  = str(inst["token"])
@@ -347,6 +366,10 @@ def run():
                     # Auto-execution (only when trading.auto_execute: true)
                     # ----------------------------------------------------
                     if auto_execute:
+                        if not market_regime_ok:
+                            logger.info(f"[AutoExec] Skipped {top_signal.symbol}: {market_regime_reason}")
+                            alerter.send_order_skipped(top_signal.symbol, f"Unfavorable market regime: {market_regime_reason}")
+                            continue
                         if (cutoff_h is not None
                                 and (now.hour > cutoff_h or (now.hour == cutoff_h and now.minute >= cutoff_m))):
                             logger.info(f"[AutoExec] Skipped {top_signal.symbol}: past new-entry cutoff "

@@ -27,6 +27,15 @@ trading:
   # mode first, since forcing an early exit has real opportunity-cost risk.
   allow_position_rotation: true
   rotation_min_confidence: 92
+# Market-wide regime gate: checks Nifty 50's own trend strength (daily ADX)
+# and India VIX before allowing any new entries — catches days where the
+# broad market itself is choppy/fearful, on top of the per-stock filters.
+# Keep enabled=false until validated over a few live paper sessions (it only
+# logs its decision in observe-only mode without blocking anything).
+market_regime:
+  enabled: false
+  min_market_adx: 18.0
+  max_vix: 20.0
 risk:
   per_trade_risk_pct: 1.0
   daily_loss_limit_pct: 2.0
