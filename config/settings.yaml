@@ -22,7 +22,7 @@ trading:
   # it, instead of just skipping the new setup. Off by default — test in paper
   # mode first, since forcing an early exit has real opportunity-cost risk.
   allow_position_rotation: false
-  rotation_min_confidence: 85
+  rotation_min_confidence: 92
 risk:
   per_trade_risk_pct: 1.0
   daily_loss_limit_pct: 2.0
