@@ -5,7 +5,10 @@ trading:
   max_trades_per_day: 10
   candle_interval_minutes: 15
   square_off_time: '15:15'
-  new_entry_cutoff_time: '13:00'
+  # Entries after this only get < 2hr (max_holding_candles=8 * 15min) runway
+  # before square-off, so late trades increasingly get cut short by EOD
+  # instead of their own exit logic — accepted tradeoff for more setups.
+  new_entry_cutoff_time: '14:00'
   market_open: '09:15'
   market_close: '15:30'
   auto_execute: true
@@ -18,8 +21,17 @@ market_regime:
   max_vix: 20.0
 risk:
   per_trade_risk_pct: 1.0
+  # When true, the halt thresholds below are ignored in favor of
+  # data_collection_overrides (near-unlimited) so paper trading runs full
+  # days without early cutoffs, for gathering more sample trades. Set to
+  # false before any real-money/live run.
+  data_collection_mode: true
   daily_loss_limit_pct: 2.0
-  max_consecutive_losses: 4
+  # Backtest-calibrated (see risk/circuit_breaker.py) — 4 tripped on ~81% of days
+  max_consecutive_losses: 8
+  data_collection_overrides:
+    daily_loss_limit_pct: 100.0
+    max_consecutive_losses: 999
   atr_stop_multiplier: 1.5
   atr_target_multiplier: 3.0
   max_position_value_pct: 50.0
@@ -46,6 +58,25 @@ strategy:
   min_adx: 15
   min_ema_trend_factor: 8
   confirmation_candles: 0
+  # null/empty = disabled (current live behavior, unchanged — trade all session hours).
+  # e.g. "11:00" skips entries before that clock time. Evidenced but NOT yet
+  # validated via backtest — the 9:30-10:59 post-ORB window shows a materially
+  # lower win rate (~30%) than later hours (~40%) across multiple test runs;
+  # test via --min-entry-time before enabling live.
+  min_entry_time: null
+  # Widen the ATR stop for entries before early_session_end_time (e.g. "10:30"),
+  # to give whipsaw-prone early entries more room. null/empty = disabled
+  # (current live behavior, unchanged — same atr_stop_multiplier all session).
+  # NOT yet validated — test via --early-session-end-time/--early-session-atr-stop-mult.
+  early_session_end_time: null
+  early_session_atr_stop_mult: null
+  # Require price to pull back near the ORB level and resume in the breakout
+  # direction before entering, instead of entering on the raw breakout candle.
+  # false = disabled (current live behavior, unchanged). NOT yet validated —
+  # test via --require-orb-retest before enabling live.
+  require_orb_retest: false
+  retest_tolerance_atr: 0.15
+  retest_timeout_candles: 6
 watchlist:
   instruments:
   - exchange: NSE

@@ -31,50 +31,67 @@ def make_strategy(**overrides):
 
 def test_score_long_all_factors_hand_computed():
     strat = make_strategy()
-    strat._orb_high = 100.0
+    strat._orb_high, strat._orb_low = 100.0, 99.0
 
-    close, ema_f, ema_s, rsi_val, vwap_v = 100.5, 10.1, 10.0, 55.0, 100.2
-    cur_vol, avg_vol = 2000.0, 1000.0
-    sl, target = 98.0, 106.0   # risk=2.5, reward=5.5, rr=2.2
+    close, ema_f, ema_s, rsi_val, vwap_v = 100.3, 10.1, 10.0, 55.0, 100.2
+    atr_val, adx_val = 1.0, 30.0
 
-    score, factors = strat._score_long(close, ema_f, ema_s, rsi_val, vwap_v,
-                                        cur_vol, avg_vol, sl, target)
+    score, factors = strat._score_long(close, ema_f, ema_s, rsi_val, vwap_v, atr_val, adx_val)
 
-    # 1. orb_breakout: (100.5-100)/100*100=0.5% -> min(0.5,2.0)=0.5 -> min(20,0.5*10)=5.0
-    assert factors["orb_breakout"] == pytest.approx(5.0, abs=0.1)
-    # 2. ema_trend: (10.1-10.0)/10.0*100=1.0% -> min(20, 1.0*50)=20.0 (saturated)
+    # 1. orb_breakout (old raw-% formula): orb_pct=(100.3-100)/100*100=0.3 -> 0.3*10=3.0
+    assert factors["orb_breakout"] == pytest.approx(3.0, abs=0.1)
+    # 2. ema_trend (old raw-% formula): ema_sep_pct=(10.1-10.0)/10.0*100=1.0 -> 1.0*50=50 -> capped 20.0
     assert factors["ema_trend"] == pytest.approx(20.0, abs=0.1)
-    # 3. vwap_position: (100.5-100.2)/100.2*100=0.2994% in [0.1,1.0] -> 20.0
+    # 3. vwap_position (ATR-normalized): vwap_dist_atr=(100.3-100.2)/1=0.1 in [0.05,0.3] -> 20.0
     assert factors["vwap_position"] == pytest.approx(20.0, abs=0.1)
     # 4. rsi_quality: 55 in [50,60] -> 20.0
     assert factors["rsi_quality"] == 20.0
-    # 5. volume: 2000/1000=2.0 ratio >= 1.5 -> 20.0
-    assert factors["volume"] == 20.0
+    # 5. adx_trend: 25 <= 30 < 35 -> 16.0
+    assert factors["adx_trend"] == 16.0
 
     assert score == pytest.approx(sum(factors.values()))
 
 
 def test_score_long_below_vwap_scores_zero_vwap_factor():
     strat = make_strategy()
-    strat._orb_high = 100.0
+    strat._orb_high, strat._orb_low = 100.0, 99.0
     _, factors = strat._score_long(close=100.5, ema_f=10.1, ema_s=10.0, rsi_val=55,
                                     vwap_v=101.0,  # price below VWAP -> bad for long
-                                    cur_vol=2000, avg_vol=1000, sl=98, target=106)
+                                    atr_val=1.0, adx_val=30.0)
     assert factors["vwap_position"] == 0.0
+
+
+def test_score_long_overextended_vwap_scores_lower_than_sweet_spot():
+    strat = make_strategy()
+    strat._orb_high, strat._orb_low = 100.0, 99.0
+    _, sweet = strat._score_long(close=100.3, ema_f=10.1, ema_s=10.0, rsi_val=55,
+                                  vwap_v=100.2, atr_val=1.0, adx_val=30.0)
+    _, extended = strat._score_long(close=103.0, ema_f=10.1, ema_s=10.0, rsi_val=55,
+                                     vwap_v=100.2, atr_val=1.0, adx_val=30.0)
+    # vwap_dist_atr=2.8 ATR past the level -> already extended/chasing -> penalized
+    assert extended["vwap_position"] < sweet["vwap_position"]
+
+
+def test_adx_score_tiers():
+    strat = make_strategy()
+    assert strat._adx_score(10.0) == 0.0
+    assert strat._adx_score(17.0) == 5.0
+    assert strat._adx_score(22.0) == 10.0
+    assert strat._adx_score(28.0) == 16.0
+    assert strat._adx_score(40.0) == 20.0
+    assert strat._adx_score(float("nan")) == 0.0
 
 
 def test_score_short_mirrors_long_logic():
     strat = make_strategy()
-    strat._orb_low = 100.0
+    strat._orb_high, strat._orb_low = 101.0, 100.0   # range=1.0 -> range_atr=1.0 (atr=1.0)
 
     close, ema_f, ema_s, rsi_val, vwap_v = 99.5, 9.9, 10.0, 45.0, 99.8
-    cur_vol, avg_vol = 2000.0, 1000.0
-    sl, target = 102.0, 94.0   # risk=2.5, reward=5.5, rr=2.2
+    atr_val, adx_val = 1.0, 30.0
 
-    score, factors = strat._score_short(close, ema_f, ema_s, rsi_val, vwap_v,
-                                         cur_vol, avg_vol, sl, target)
+    score, factors = strat._score_short(close, ema_f, ema_s, rsi_val, vwap_v, atr_val, adx_val)
     assert factors["rsi_quality"] == 20.0     # 45 in [40,50]
-    assert factors["volume"] == 20.0
+    assert factors["adx_trend"] == 16.0
     assert score == pytest.approx(sum(factors.values()))
 
 

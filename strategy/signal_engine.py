@@ -4,13 +4,22 @@ strategy/signal_engine.py
 ORB + EMA crossover + VWAP filter + RSI filter + ATR stops
 WITH CONFIDENCE SCORING (0-100).
 
-Confidence is built from 6 independent factors, each scored 0-20:
-  1. ORB breakout strength   — how decisively price cleared the range
-  2. EMA alignment           — separation between fast/slow EMAs (trend strength)
-  3. VWAP position           — price distance from VWAP (momentum)
-  4. RSI quality             — RSI in ideal entry zone (not overbought/oversold)
-  5. Volume confirmation     — current volume vs. average volume
-  6. Risk:Reward ratio       — must be >= 1.5 to score; higher is better
+Confidence is built from 5 independent factors, each scored 0-20. This is a
+HYBRID of two backtested designs (see tools/analyze_confidence_factors.py +
+backtest_results_baseline90 vs backtest_results_baseline90_redesign): per-factor
+correlation with win/pnl was compared for the raw-%-distance formulas vs. an
+ATR-normalized sweet-spot-band redesign, and each factor kept whichever version
+scored better (neither design was a clean sweep):
+  1. ORB breakout strength   — raw %-distance past ORB high/low (old formula;
+                                marginally better win-correlation than the ATR version)
+  2. EMA alignment           — raw %-separation of EMA9/21 (old formula; ATR
+                                version saturated 74% of trades into one bucket)
+  3. VWAP position           — price distance from VWAP in ATR units (redesigned;
+                                flipped a wrong-signed correlation to correct-signed)
+  4. RSI quality             — RSI in ideal entry zone (unchanged either way —
+                                this is the one factor with genuine signal)
+  5. ADX trend strength      — per-symbol ADX regime strength (redesigned;
+                                replaces the old wrong-signed `volume` factor)
 
 Only signals with confidence >= MIN_CONFIDENCE_THRESHOLD are emitted as BUY/SELL.
 Below threshold: HOLD is returned (not worth alerting).
@@ -20,6 +29,7 @@ Design: automatic order execution is a PLACEHOLDER — see _execute_placeholder(
 
 from __future__ import annotations
 import logging
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -62,6 +72,12 @@ class ORBEMAVWAPStrategy(StrategyBase):
         min_adx              : float = 0.0    (skip entries if ADX is below this — choppy/non-trending regime; 0 = disabled)
         min_ema_trend_factor : float = 0.0    (skip entries if the ema_trend confidence sub-factor is below this, out of 20; 0 = disabled)
         confirmation_candles : int   = 0      (require this many consecutive same-direction candles — including the signal candle — before entering; 0 = disabled)
+        min_entry_time       : str   = None   (skip new entries before this clock time, e.g. "11:00"; None/empty = disabled, current live behavior)
+        early_session_end_time      : str   = None (widen the stop-loss for entries before this clock time; None/empty = disabled)
+        early_session_atr_stop_mult : float = None (ATR stop multiplier to use for entries before early_session_end_time, e.g. 2.0; ignored unless early_session_end_time is set)
+        require_orb_retest   : bool  = False  (instead of entering on the raw breakout candle, wait for price to pull back near the ORB level and resume in the breakout direction; False = disabled, current live behavior)
+        retest_tolerance_atr : float = 0.15   (how close, in ATR multiples, price must pull back to the ORB level to count as a retest)
+        retest_timeout_candles : int = 6      (cancel a pending breakout if no confirmed retest+resume happens within this many candles)
     """
 
     def __init__(self, symbol: str, token: str, **kwargs) -> None:
@@ -93,6 +109,17 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self.min_adx           = float(p.get("min_adx",           0.0))
         self.min_ema_trend_factor = float(p.get("min_ema_trend_factor", 0.0))
         self.confirmation_candles = int(p.get("confirmation_candles", 0))
+        min_entry_time_str     = p.get("min_entry_time") or None
+        self.min_entry_time     = (datetime.strptime(min_entry_time_str, "%H:%M").time()
+                                    if min_entry_time_str else None)
+        early_session_end_str   = p.get("early_session_end_time") or None
+        self.early_session_end_time = (datetime.strptime(early_session_end_str, "%H:%M").time()
+                                        if early_session_end_str else None)
+        early_session_mult       = p.get("early_session_atr_stop_mult")
+        self.early_session_atr_stop_mult = float(early_session_mult) if early_session_mult is not None else None
+        self.require_orb_retest     = bool(p.get("require_orb_retest", False))
+        self.retest_tolerance_atr   = float(p.get("retest_tolerance_atr", 0.15))
+        self.retest_timeout_candles = int(p.get("retest_timeout_candles", 6))
 
         # Session state
         self._position         = None     # None | "long" | "short"
@@ -104,6 +131,9 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self._initial_risk     = 0.0      # |entry - initial stop|, used for breakeven trigger
         self._breakeven_done   = False
         self._candles_held     = 0
+        self._pending_breakout  = None     # None | "long" | "short" — awaiting ORB retest
+        self._pending_candles   = 0
+        self._retest_seen       = False
 
     def reset(self) -> None:
         self._position   = None
@@ -115,6 +145,9 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self._initial_risk   = 0.0
         self._breakeven_done = False
         self._candles_held   = 0
+        self._pending_breakout = None
+        self._pending_candles  = 0
+        self._retest_seen      = False
 
     def force_exit(self) -> None:
         """Sync internal state after an external hard close (SL/target/EOD hit by caller)."""
@@ -169,6 +202,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
         rsi_val      = rsi(closes, self.rsi_period).iloc[-1]
         atr_val      = atr(highs, lows, closes, self.atr_period).iloc[-1]
         vwap_v       = vwap(highs, lows, closes, volumes).iloc[-1]
+        adx_val      = adx(highs, lows, closes, self.adx_period).iloc[-1]
         avg_vol      = float(volumes.iloc[-self.vol_avg_periods:].mean())
         cur_vol      = float(candle["volume"])
 
@@ -190,6 +224,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
             today_hist = history[history["timestamp"].dt.date == cur_date_orb]
         else:
             today_hist = history
+            candle_ts  = None
         n_today = len(today_hist)
 
         if self._orb_high is None and n_today >= self.orb_candles:
@@ -205,16 +240,19 @@ class ORBEMAVWAPStrategy(StrategyBase):
         if self._position is not None:
             return self._check_exits(close, ema_f, ema_s, atr_val)
 
+        # === Entry-time gate — skip new entries before a configured clock time
+        # (e.g. the noisy 9:30-10:59 post-ORB window is disproportionately whipsaw-prone)
+        if self.min_entry_time is not None and candle_ts is not None and candle_ts.time() < self.min_entry_time:
+            return hold
+
         # === Volatility gate — skip entries on too-illiquid/choppy or too-wild stocks ===
         atr_pct = (atr_val / close * 100) if close else 0.0
         if not (self.min_atr_pct <= atr_pct <= self.max_atr_pct):
             return hold
 
         # === Regime gate — skip entries when ADX shows a non-trending/choppy market ===
-        if self.min_adx > 0:
-            adx_val = adx(highs, lows, closes, self.adx_period).iloc[-1]
-            if pd.isna(adx_val) or adx_val < self.min_adx:
-                return hold
+        if self.min_adx > 0 and (pd.isna(adx_val) or adx_val < self.min_adx):
+            return hold
 
         # === Candle-confirmation gate — require N consecutive same-direction candles
         # (including the signal candle) before entering, instead of firing on a single
@@ -232,14 +270,35 @@ class ORBEMAVWAPStrategy(StrategyBase):
         vwap_ok_long  = (close > vwap_v) if self.vwap_filter else True
         vwap_ok_short = (close < vwap_v) if self.vwap_filter else True
 
-        # --- LONG setup ---
-        if (close > self._orb_high and ema_f > ema_s
-                and rsi_val < self.rsi_overbought and vwap_ok_long and bullish_confirmed):
+        raw_long_breakout  = (close > self._orb_high and ema_f > ema_s
+                               and rsi_val < self.rsi_overbought and vwap_ok_long and bullish_confirmed)
+        raw_short_breakout = (close < self._orb_low and ema_f < ema_s
+                               and rsi_val > self.rsi_oversold and vwap_ok_short and bearish_confirmed)
 
-            sl     = close - (atr_val * self.atr_stop_mult)
+        if self.require_orb_retest:
+            low  = float(candle["low"])
+            high = float(candle["high"])
+            long_entry_ready, short_entry_ready = self._update_orb_retest_state(
+                close, low, high, atr_val, raw_long_breakout, raw_short_breakout
+            )
+        else:
+            long_entry_ready, short_entry_ready = raw_long_breakout, raw_short_breakout
+
+        # Early-session stop widening — the 9:30-10:59 post-ORB window is
+        # disproportionately whipsaw-prone; a wider stop gives entries in this
+        # window more room before getting stopped out by noise.
+        stop_mult = self.atr_stop_mult
+        if (self.early_session_end_time is not None and self.early_session_atr_stop_mult is not None
+                and candle_ts is not None and candle_ts.time() < self.early_session_end_time):
+            stop_mult = self.early_session_atr_stop_mult
+
+        # --- LONG setup ---
+        if long_entry_ready:
+
+            sl     = close - (atr_val * stop_mult)
             target = close + (atr_val * self.atr_target_mult)
             score, factors = self._score_long(
-                close, ema_f, ema_s, rsi_val, vwap_v, cur_vol, avg_vol, sl, target
+                close, ema_f, ema_s, rsi_val, vwap_v, atr_val, adx_val
             )
 
             if score < self.min_confidence:
@@ -260,7 +319,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
             self._candles_held   = 0
 
             reason = self._build_reason("LONG", close, ema_f, ema_s, rsi_val, vwap_v,
-                                         cur_vol, avg_vol, score)
+                                         cur_vol, avg_vol, adx_val, score)
             return TradeSignal(
                 signal=Signal.BUY, symbol=self.symbol, token=self.token,
                 entry_price=close, stop_loss=round(sl, 2), target=round(target, 2),
@@ -270,13 +329,12 @@ class ORBEMAVWAPStrategy(StrategyBase):
             )
 
         # --- SHORT setup ---
-        if (close < self._orb_low and ema_f < ema_s
-                and rsi_val > self.rsi_oversold and vwap_ok_short and bearish_confirmed):
+        if short_entry_ready:
 
-            sl     = close + (atr_val * self.atr_stop_mult)
+            sl     = close + (atr_val * stop_mult)
             target = close - (atr_val * self.atr_target_mult)
             score, factors = self._score_short(
-                close, ema_f, ema_s, rsi_val, vwap_v, cur_vol, avg_vol, sl, target
+                close, ema_f, ema_s, rsi_val, vwap_v, atr_val, adx_val
             )
 
             if score < self.min_confidence:
@@ -297,7 +355,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
             self._candles_held   = 0
 
             reason = self._build_reason("SHORT", close, ema_f, ema_s, rsi_val, vwap_v,
-                                         cur_vol, avg_vol, score)
+                                         cur_vol, avg_vol, adx_val, score)
             return TradeSignal(
                 signal=Signal.SELL, symbol=self.symbol, token=self.token,
                 entry_price=close, stop_loss=round(sl, 2), target=round(target, 2),
@@ -307,6 +365,58 @@ class ORBEMAVWAPStrategy(StrategyBase):
             )
 
         return hold
+
+    # ---------------------------------------------------------------
+    # ORB-retest state machine (opt-in via require_orb_retest)
+    # ---------------------------------------------------------------
+
+    def _update_orb_retest_state(self, close: float, low: float, high: float, atr_val: float,
+                                  raw_long_breakout: bool, raw_short_breakout: bool) -> tuple[bool, bool]:
+        """
+        Instead of entering on the raw breakout candle, require price to pull back
+        (retest) close to the ORB level and then resume in the breakout direction
+        before actually entering — filters out one-candle fakeouts that never
+        confirm. Cancels the pending setup if price reverses hard through the
+        opposite ORB level, or if no retest+resume happens within
+        retest_timeout_candles.
+        """
+        tol = self.retest_tolerance_atr * atr_val
+
+        if self._pending_breakout == "long":
+            self._pending_candles += 1
+            if close < self._orb_low or self._pending_candles > self.retest_timeout_candles:
+                self._pending_breakout = None
+                return False, False
+            if low <= self._orb_high + tol:
+                self._retest_seen = True
+            if self._retest_seen and raw_long_breakout:
+                self._pending_breakout = None
+                return True, False
+            return False, False
+
+        if self._pending_breakout == "short":
+            self._pending_candles += 1
+            if close > self._orb_high or self._pending_candles > self.retest_timeout_candles:
+                self._pending_breakout = None
+                return False, False
+            if high >= self._orb_low - tol:
+                self._retest_seen = True
+            if self._retest_seen and raw_short_breakout:
+                self._pending_breakout = None
+                return False, True
+            return False, False
+
+        # No pending breakout yet — arm on a fresh raw breakout, but don't enter
+        # immediately; wait for the retest+resume on a later candle.
+        if raw_long_breakout:
+            self._pending_breakout = "long"
+            self._pending_candles  = 0
+            self._retest_seen      = False
+        elif raw_short_breakout:
+            self._pending_breakout = "short"
+            self._pending_candles  = 0
+            self._retest_seen      = False
+        return False, False
 
     # ---------------------------------------------------------------
     # Exit logic
@@ -326,8 +436,9 @@ class ORBEMAVWAPStrategy(StrategyBase):
                     logger.info(f"[{self.symbol}] Long stop moved to breakeven ₹{self._stop_loss:.2f}")
 
             # Cascading early exit: if the trade is still stalled (below early_cut_min_r)
-            # after early_cut_candles, cut it now instead of waiting for max_holding_candles —
-            # frees capital/fees for a live setup and stops eating the wider target's time budget.
+            # after early_cut_candles, hard-exit rather than let it bleed further.
+            # (A conditional-tighten-stop variant was tested and found to be a net
+            # regression vs. this plain hard-cut across two backtest sweeps — removed.)
             if (self.early_cut_candles and not self._breakeven_done
                     and self._candles_held >= self.early_cut_candles and self._initial_risk > 0):
                 current_r = (close - self._entry_price) / self._initial_risk
@@ -407,29 +518,52 @@ class ORBEMAVWAPStrategy(StrategyBase):
         return hold
 
     # ---------------------------------------------------------------
-    # Confidence scoring (0-100, sum of 6 factors × 0-20 each)
+    # Confidence scoring (0-100, sum of 5 factors x 0-20 each). HYBRID: orb_breakout
+    # and ema_trend use the old raw-%-distance formulas (backtested as marginally
+    # better/no-worse than the ATR-normalized redesign); vwap_position and
+    # adx_trend use the ATR-normalized/regime-based redesign (backtested as a
+    # genuine improvement over the old vwap %-distance and `volume` formulas).
+    # See tools/analyze_confidence_factors.py + backtest_results_baseline90 vs.
+    # backtest_results_baseline90_redesign for the comparison that drove this.
     # ---------------------------------------------------------------
 
-    def _score_long(self, close, ema_f, ema_s, rsi_val, vwap_v,
-                    cur_vol, avg_vol, sl, target) -> tuple[float, dict]:
-        factors = {}
+    @staticmethod
+    def _sweet_spot_score(x: float, lo: float, hi: float, ramp_in: float,
+                          decay_span: float, floor: float = 0.0) -> float:
+        """Score that ramps 0->20 up to [lo,hi], holds 20 inside the band, then
+        decays down to `floor` over `decay_span` beyond `hi`. `ramp_in` sets how
+        quickly sub-`lo` values ramp up (0 at x=0)."""
+        if x <= 0:
+            return 0.0
+        if x < lo:
+            return round(min(20.0, x / max(ramp_in, 1e-9) * 20.0), 1)
+        if x <= hi:
+            return 20.0
+        return round(max(floor, 20.0 - (x - hi) / max(decay_span, 1e-9) * (20.0 - floor)), 1)
 
-        # 1. ORB breakout strength (how far above ORB high, capped at 1 ATR)
+    def _score_long(self, close, ema_f, ema_s, rsi_val, vwap_v,
+                    atr_val, adx_val) -> tuple[float, dict]:
+        factors = {}
+        atr_safe = atr_val + 1e-9
+
+        # 1. ORB breakout strength — reverted to old raw-%-distance formula:
+        # backtest correlation analysis showed this scored marginally better
+        # (corr(win)=+0.031) than the ATR-normalized sweet-spot version
+        # (corr(win)=+0.005); the ATR version isn't a clear win here.
         orb_pct = min((close - self._orb_high) / (self._orb_high + 1e-9) * 100, 2.0)
         factors["orb_breakout"] = round(min(20, orb_pct * 10), 1)
 
-        # 2. EMA separation (trend strength)
+        # 2. EMA separation — reverted to old raw-%-distance formula: the ATR
+        # sweet-spot version saturated 74% of trades into its top bucket
+        # (worse resolution) with no correlation improvement to compensate.
         ema_sep_pct = (ema_f - ema_s) / (ema_s + 1e-9) * 100
         factors["ema_trend"] = round(min(20, ema_sep_pct * 50), 1)
 
-        # 3. VWAP distance — ideal: just above (0.1-0.5%)
-        vwap_dist_pct = (close - vwap_v) / (vwap_v + 1e-9) * 100
-        if 0.1 <= vwap_dist_pct <= 1.0:
-            factors["vwap_position"] = 20.0
-        elif vwap_dist_pct > 1.0:
-            factors["vwap_position"] = round(max(0, 20 - (vwap_dist_pct - 1.0) * 10), 1)
-        else:
-            factors["vwap_position"] = 0.0  # Below VWAP — no score for long
+        # 3. VWAP distance in ATR units — KEPT (redesigned): flipped the
+        # correlation sign to the correct direction vs. the old %-distance
+        # formula (corr(win) -0.033 -> +0.020), a genuine improvement.
+        vwap_dist_atr = (close - vwap_v) / atr_safe
+        factors["vwap_position"] = self._sweet_spot_score(vwap_dist_atr, 0.05, 0.3, 0.05, 0.7, floor=0.0)
 
         # 4. RSI quality — ideal 50-60 for long entry
         if 50 <= rsi_val <= 60:
@@ -441,45 +575,28 @@ class ORBEMAVWAPStrategy(StrategyBase):
         else:
             factors["rsi_quality"] = 0.0
 
-        # 5. Volume confirmation (current candle volume vs. average)
-        vol_ratio = cur_vol / (avg_vol + 1e-9)
-        if vol_ratio >= 1.5:
-            factors["volume"] = 20.0
-        elif vol_ratio >= 1.2:
-            factors["volume"] = 15.0
-        elif vol_ratio >= 1.0:
-            factors["volume"] = 10.0
-        else:
-            factors["volume"] = 0.0  # Below-average volume = weak signal
-
-        # 6. Risk:Reward ratio — NOTE: removed as a scoring factor. sl/target are both
-        # derived purely from atr_val * config multipliers (atr_stop_mult/atr_target_mult),
-        # so this ratio is a strategy-wide constant identical on every single trade —
-        # it carried zero per-trade information despite being weighted up to 20/100.
+        # 5. ADX trend-strength regime (direction-agnostic — same for long/short).
+        factors["adx_trend"] = self._adx_score(adx_val)
 
         total = min(100.0, sum(factors.values()))
         return total, factors
 
     def _score_short(self, close, ema_f, ema_s, rsi_val, vwap_v,
-                     cur_vol, avg_vol, sl, target) -> tuple[float, dict]:
+                     atr_val, adx_val) -> tuple[float, dict]:
         factors = {}
+        atr_safe = atr_val + 1e-9
 
-        # 1. ORB breakdown strength
+        # 1. ORB breakdown strength (mirror of _score_long) — old raw-% formula.
         orb_pct = min((self._orb_low - close) / (self._orb_low + 1e-9) * 100, 2.0)
         factors["orb_breakout"] = round(min(20, orb_pct * 10), 1)
 
-        # 2. EMA separation
+        # 2. EMA separation — old raw-% formula.
         ema_sep_pct = (ema_s - ema_f) / (ema_s + 1e-9) * 100
         factors["ema_trend"] = round(min(20, ema_sep_pct * 50), 1)
 
-        # 3. VWAP — ideal: just below VWAP (0.1-0.5%)
-        vwap_dist_pct = (vwap_v - close) / (vwap_v + 1e-9) * 100
-        if 0.1 <= vwap_dist_pct <= 1.0:
-            factors["vwap_position"] = 20.0
-        elif vwap_dist_pct > 1.0:
-            factors["vwap_position"] = round(max(0, 20 - (vwap_dist_pct - 1.0) * 10), 1)
-        else:
-            factors["vwap_position"] = 0.0
+        # 3. VWAP — ideal: just below VWAP, in ATR units (kept/redesigned).
+        vwap_dist_atr = (vwap_v - close) / atr_safe
+        factors["vwap_position"] = self._sweet_spot_score(vwap_dist_atr, 0.05, 0.3, 0.05, 0.7, floor=0.0)
 
         # 4. RSI quality — ideal 40-50 for short
         if 40 <= rsi_val <= 50:
@@ -491,34 +608,42 @@ class ORBEMAVWAPStrategy(StrategyBase):
         else:
             factors["rsi_quality"] = 0.0
 
-        # 5. Volume
-        vol_ratio = cur_vol / (avg_vol + 1e-9)
-        if vol_ratio >= 1.5:
-            factors["volume"] = 20.0
-        elif vol_ratio >= 1.2:
-            factors["volume"] = 15.0
-        elif vol_ratio >= 1.0:
-            factors["volume"] = 10.0
-        else:
-            factors["volume"] = 0.0
-
-        # 6. Risk:Reward ratio — removed (see _score_long); constant per-config, no signal.
+        # 5. ADX trend-strength regime
+        factors["adx_trend"] = self._adx_score(adx_val)
 
         total = min(100.0, sum(factors.values()))
         return total, factors
+
+    @staticmethod
+    def _adx_score(adx_val: float) -> float:
+        """Conventional ADX thresholds: <15 no trend, 15-20 weak, 20-25 developing,
+        25-35 strong, >=35 very strong. Direction-agnostic (ADX measures strength,
+        not direction — the entry gates already establish direction)."""
+        if pd.isna(adx_val):
+            return 0.0
+        if adx_val >= 35:
+            return 20.0
+        if adx_val >= 25:
+            return 16.0
+        if adx_val >= 20:
+            return 10.0
+        if adx_val >= 15:
+            return 5.0
+        return 0.0
 
     # ---------------------------------------------------------------
     # Reason string builder
     # ---------------------------------------------------------------
 
     def _build_reason(self, direction, close, ema_f, ema_s, rsi_val,
-                       vwap_v, cur_vol, avg_vol, score) -> str:
+                       vwap_v, cur_vol, avg_vol, adx_val, score) -> str:
         orb_ref = self._orb_high if direction == "LONG" else self._orb_low
+        adx_str = f"{adx_val:.1f}" if pd.notna(adx_val) else "n/a"
         return (
             f"{direction} | Score={score:.0f}/100 | "
             f"Close=₹{close:.2f} {'>' if direction=='LONG' else '<'} ORB={'H' if direction=='LONG' else 'L'}=₹{orb_ref:.2f} | "
             f"EMA9={ema_f:.2f} EMA21={ema_s:.2f} | "
-            f"RSI={rsi_val:.1f} | VWAP=₹{vwap_v:.2f} | "
+            f"RSI={rsi_val:.1f} | VWAP=₹{vwap_v:.2f} | ADX={adx_str} | "
             f"Vol={cur_vol:,.0f} (avg {avg_vol:,.0f})"
         )
 

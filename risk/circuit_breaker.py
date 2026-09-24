@@ -41,7 +41,10 @@ class CircuitBreaker:
     daily_loss_limit_pct   : float = 2.0
     max_trades_per_day     : int   = 10
     max_concurrent         : int   = 3
-    max_consecutive_losses : int   = 4
+    # 4 was tripping on ~81% of days in the full 302-symbol/365-day backtest
+    # (mean losing streak 3.3, 33% win rate) — not an anomaly detector at that
+    # level, just a near-daily halt. 8 trips on ~24.5% of days instead.
+    max_consecutive_losses : int   = 8
 
     # Runtime state (reset at session start)
     realized_pnl           : float = field(default=0.0, init=False)

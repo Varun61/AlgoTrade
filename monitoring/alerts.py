@@ -35,6 +35,13 @@ _bot = None
 
 _SETTINGS_PATH = Path(__file__).parent.parent / "config" / "settings.yaml"
 
+
+def _redact(text: str) -> str:
+    """Strip the bot token out of error text (e.g. embedded request URLs) before logging."""
+    if _BOT_TOKEN:
+        text = text.replace(_BOT_TOKEN, "***REDACTED***")
+    return text
+
 _DIVIDER = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
 
 
@@ -78,7 +85,7 @@ def _send_sync(message: str) -> None:
                 asyncio.run(_send_async(message))
                 return
             except Exception as exc:
-                logger.error(f"[Alerts] Telegram send failed (attempt {attempt}/2): {exc}")
+                logger.error(f"[Alerts] Telegram send failed (attempt {attempt}/2): {_redact(str(exc))}")
 
     # Fallback: print to console
     print(f"\n{'='*60}\n[ALERT] {message}\n{'='*60}\n")
@@ -233,8 +240,31 @@ class TelegramAlerter:
     def send_order_failed(self, symbol: str, reason: str) -> None:
         _send_sync(f"❌ <b>ORDER FAILED</b> — {symbol}\n{_DIVIDER}\n{reason}")
 
-    def send_order_skipped(self, symbol: str, reason: str) -> None:
-        _send_sync(f"⏭️ <b>NOT EXECUTED</b> — {symbol}\n{_DIVIDER}\nAlerted but no order was placed.\nReason: {reason}")
+    def send_order_skipped(self, trade_signal, reason: str) -> None:
+        """
+        `trade_signal` may be a full TradeSignal (preferred — logs entry/stop/target
+        so we can later reconstruct what the trade WOULD have done) or a bare symbol
+        string (legacy call sites with no signal object in scope).
+        """
+        from strategy.strategy_base import Signal, TradeSignal
+
+        if isinstance(trade_signal, TradeSignal):
+            symbol = trade_signal.symbol
+            _send_sync(f"⏭️ <b>NOT EXECUTED</b> — {symbol}\n{_DIVIDER}\nAlerted but no order was placed.\nReason: {reason}")
+            _log_alert({
+                "event"      : "SKIPPED",
+                "symbol"     : symbol,
+                "direction"  : "BUY" if trade_signal.signal == Signal.BUY else "SELL",
+                "entry_price": trade_signal.entry_price,
+                "stop_loss"  : trade_signal.stop_loss,
+                "target"     : trade_signal.target,
+                "confidence" : trade_signal.confidence,
+                "reason"     : reason,
+            })
+        else:
+            symbol = trade_signal
+            _send_sync(f"⏭️ <b>NOT EXECUTED</b> — {symbol}\n{_DIVIDER}\nAlerted but no order was placed.\nReason: {reason}")
+            _log_alert({"event": "SKIPPED", "symbol": symbol, "reason": reason})
 
     def send_order_closed(self, order_id: str, symbol: str, exit_price: float, pnl: float) -> None:
         emoji = "✅" if pnl >= 0 else "❌"

@@ -61,36 +61,6 @@ def build_ws_token_list(watchlist: list[dict]) -> list[dict]:
     return [{"exchangeType": seg, "tokens": toks} for seg, toks in groups.items()]
 
 
-def retry_failed_warmups(
-    watchlist: list[dict],
-    histories: dict,
-    fetcher,
-    interval_min: int,
-    warmup_days: int,
-    cooldown_secs: float = 5.0,
-) -> list[str]:
-    """
-    Retry warm-up fetch for any symbol whose history came back empty.
-    Mutates `histories` in place. Returns symbols still empty after the retry.
-    """
-    failed = [inst for inst in watchlist if histories[str(inst["token"])].empty]
-    if failed:
-        logger.warning(f"Retrying warm-up for {len(failed)} symbol(s) that failed the first pass: "
-                        f"{[inst['symbol'] for inst in failed]}")
-        time.sleep(cooldown_secs)
-        for inst in failed:
-            token  = str(inst["token"])
-            symbol = inst["symbol"]
-            exch   = inst["exchange"]
-            logger.info(f"Retry warm-up for {symbol} ...")
-            warmup = fetcher.fetch_warmup(exch, token, interval_min, lookback_days=warmup_days)
-            histories[token] = warmup
-            if warmup.empty:
-                logger.error(f"[Warmup] {symbol} ({token}) still has no history after retry pass.")
-
-    return [inst["symbol"] for inst in watchlist if histories[str(inst["token"])].empty]
-
-
 def run():
     cfg         = load_settings()
     trading_cfg = cfg["trading"]
@@ -148,12 +118,25 @@ def run():
         capital=capital, per_trade_risk_pct=risk_cfg["per_trade_risk_pct"],
         max_position_value=capital * risk_cfg.get("max_position_value_pct", 50.0) / 100,
     ) if auto_execute else None
+
+    # Data-collection mode: swap in near-unlimited halt thresholds so paper
+    # sessions run full days without early cutoffs, for gathering more trades.
+    if risk_cfg.get("data_collection_mode", False):
+        dc_overrides            = risk_cfg.get("data_collection_overrides", {})
+        daily_loss_limit_pct    = dc_overrides.get("daily_loss_limit_pct", risk_cfg["daily_loss_limit_pct"])
+        max_consecutive_losses  = dc_overrides.get("max_consecutive_losses", risk_cfg["max_consecutive_losses"])
+        logger.warning("[Risk] data_collection_mode=true — daily loss limit and consecutive-loss "
+                        "halts are loosened for data collection, NOT safe for live/real-money trading.")
+    else:
+        daily_loss_limit_pct    = risk_cfg["daily_loss_limit_pct"]
+        max_consecutive_losses  = risk_cfg["max_consecutive_losses"]
+
     breaker      = CircuitBreaker(
         capital=capital,
-        daily_loss_limit_pct=risk_cfg["daily_loss_limit_pct"],
+        daily_loss_limit_pct=daily_loss_limit_pct,
         max_trades_per_day=trading_cfg["max_trades_per_day"],
         max_concurrent=trading_cfg["max_concurrent_positions"],
-        max_consecutive_losses=risk_cfg["max_consecutive_losses"],
+        max_consecutive_losses=max_consecutive_losses,
     ) if auto_execute else None
     token_exchange = {str(inst["token"]): inst["exchange"] for inst in watchlist}
     logger.info(f"Auto-execute: {'ENABLED — orders will be placed (' + mode.upper() + ' mode)' if auto_execute else 'disabled — alerts only'}")
@@ -214,6 +197,7 @@ def run():
             max_holding_candles = strategy_cfg.get("max_holding_candles", 0),
             early_cut_candles  = strategy_cfg.get("early_cut_candles", 0),
             early_cut_min_r    = strategy_cfg.get("early_cut_min_r", 0.3),
+            early_cut_tighten_stop_r = strategy_cfg.get("early_cut_tighten_stop_r", 0.0),
             min_atr_pct         = strategy_cfg.get("min_atr_pct", 0.0),
             max_atr_pct         = strategy_cfg.get("max_atr_pct", 100.0),
             adx_period          = strategy_cfg.get("adx_period", 14),
@@ -227,9 +211,10 @@ def run():
         warmup = fetcher.fetch_warmup(exch, token, interval_min, lookback_days=warmup_days)
         histories[token] = warmup
 
-    # Second pass: retry any symbols that came back empty (usually rate-limit
-    # stragglers) now that request pressure from the first pass has cooled down.
-    still_failed = retry_failed_warmups(watchlist, histories, fetcher, interval_min, warmup_days)
+    # HistoricalFetcher.fetch() already retries each request internally with
+    # backoff (see data/historical_fetcher.py) — any symbol still empty here
+    # has genuinely exhausted those retries.
+    still_failed = [inst["symbol"] for inst in watchlist if histories[str(inst["token"])].empty]
     if still_failed:
         algo_logger.log_system(f"Warm-up failed for: {', '.join(still_failed)}")
         alerter.send_system(f"⚠️ Warm-up failed for {len(still_failed)} symbol(s): {', '.join(still_failed)}")
@@ -402,14 +387,14 @@ def run():
 
                     if not market_regime_ok:
                         logger.info(f"[AutoExec] Skipped {top_signal.symbol}: {market_regime_reason}")
-                        alerter.send_order_skipped(top_signal.symbol, f"Unfavorable market regime: {market_regime_reason}")
+                        alerter.send_order_skipped(top_signal, f"Unfavorable market regime: {market_regime_reason}")
                         locked_tokens.add(alert_key)   # session-level regime verdict won't change today
                         continue
                     if (cutoff_h is not None
                             and (now.hour > cutoff_h or (now.hour == cutoff_h and now.minute >= cutoff_m))):
                         logger.info(f"[AutoExec] Skipped {top_signal.symbol}: past new-entry cutoff "
                                     f"({new_entry_cutoff}) — not enough runway before square-off.")
-                        alerter.send_order_skipped(top_signal.symbol, f"Past new-entry cutoff ({new_entry_cutoff})")
+                        alerter.send_order_skipped(top_signal, f"Past new-entry cutoff ({new_entry_cutoff})")
                         locked_tokens.add(alert_key)   # cutoff only gets further away, never retryable
                         continue
                     can, block_reason = breaker.can_trade()
@@ -431,7 +416,7 @@ def run():
                                 rotated = can
                         if not rotated and not can:
                             logger.warning(f"[AutoExec] Skipped {top_signal.symbol}: {block_reason}")
-                            alerter.send_order_skipped(top_signal.symbol, block_reason)
+                            alerter.send_order_skipped(top_signal, block_reason)
                             # Room ("Max concurrent positions") can free up later today — retryable.
                             # Daily halt/cap reasons (loss limit, max trades/day, consecutive losses) won't change.
                             if "Max concurrent positions" not in block_reason:
@@ -439,13 +424,13 @@ def run():
                             continue
                     if position_mgr.has_position(top_signal.token):
                         logger.warning(f"[AutoExec] Already in a position for {top_signal.symbol} — skipping.")
-                        alerter.send_order_skipped(top_signal.symbol, "Already in a position for this symbol")
+                        alerter.send_order_skipped(top_signal, "Already in a position for this symbol")
                         continue
 
                     qty = sizer.compute_qty(top_signal.entry_price, top_signal.stop_loss)
                     if qty <= 0:
                         logger.warning(f"[AutoExec] Qty computed as 0 for {top_signal.symbol} — skipping.")
-                        alerter.send_order_skipped(top_signal.symbol, "Computed qty was 0 (stop distance too tight for risk budget)")
+                        alerter.send_order_skipped(top_signal, "Computed qty was 0 (stop distance too tight for risk budget)")
                         continue
 
                     txn = "BUY" if top_signal.signal == Signal.BUY else "SELL"
