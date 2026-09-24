@@ -357,26 +357,28 @@ def run():
                 # Sort signals by confidence (highest first)
                 signal_buffer.sort(key=lambda s: s.confidence, reverse=True)
 
-                # Pick as many top signals as open slots allow (floor of 2 so we
-                # still rank/report picks even when auto_execute is off or slots
-                # are momentarily full — downstream gating handles the actual skip).
+                # Floor of 2 so we still rank/report picks even when auto_execute is
+                # off or slots are momentarily full (downstream gating handles the skip).
                 available_room = breaker.max_concurrent - position_mgr.open_count()
                 n_picks = max(2, available_room)
-                top_signals = signal_buffer[:n_picks]
-                ignored_count = len(signal_buffer) - len(top_signals)
+                alert_count = min(n_picks, len(signal_buffer))
 
-                logger.info(f"🏆 TOP {len(top_signals)} PICK(S) SELECTED. Ignored {ignored_count} other setups.")
-                algo_logger.log_system(f"Sent Top {len(top_signals)} Picks", {"ignored_count": ignored_count})
+                # Every buffered signal gets a real entry/rotation attempt below (not just
+                # the alerted top N) — matches backtest/engine.py, which evaluates the full
+                # leftover buffer for rotation instead of dropping it.
+                logger.info(f"🏆 TOP {alert_count} PICK(S) ALERTED. Evaluating all {len(signal_buffer)} buffered setup(s).")
+                algo_logger.log_system(f"Sent Top {alert_count} Picks", {"evaluated_count": len(signal_buffer)})
 
-                for top_signal in top_signals:
+                for i, top_signal in enumerate(signal_buffer):
                     alert_key = f"{top_signal.token}_{top_signal.signal.value}_{top_signal.entry_window_mins}"
 
-                    # Send the Telegram alert only once per setup — avoids re-notifying
-                    # every candle while we keep retrying a transiently-blocked entry below.
-                    if alert_key not in alerted_tokens:
-                        alerted_tokens.add(alert_key)
-                        alerter.send_trade_alert(top_signal)
-                    alerted_directions[top_signal.token] = "long" if top_signal.signal == Signal.BUY else "short"
+                    # Only Telegram-alert the top N (avoids notification spam) — every
+                    # signal here still gets a real entry/rotation attempt below.
+                    if i < alert_count:
+                        if alert_key not in alerted_tokens:
+                            alerted_tokens.add(alert_key)
+                            alerter.send_trade_alert(top_signal)
+                        alerted_directions[top_signal.token] = "long" if top_signal.signal == Signal.BUY else "short"
 
                     # ----------------------------------------------------
                     # Auto-execution (only when trading.auto_execute: true)
