@@ -78,6 +78,30 @@ def test_score_short_mirrors_long_logic():
     assert score == pytest.approx(sum(factors.values()))
 
 
+def test_on_candle_close_handles_string_timestamps_in_history():
+    strat = make_strategy()
+
+    ts = pd.date_range("2024-01-01 09:15:00", periods=30, freq="15min")
+    rows = []
+    for i, t in enumerate(ts):
+        base = 100.0 + i * 0.05
+        rows.append({
+            "timestamp": t.strftime("%Y-%m-%d %H:%M:%S"),
+            "open": base,
+            "high": base + 0.7,
+            "low": base - 0.5,
+            "close": base + 0.2,
+            "volume": 1000 + i,
+        })
+
+    history = pd.DataFrame(rows)
+    candle = history.iloc[-1].copy()
+    candle["volume"] = 1500
+
+    sig = strat.on_candle_close(candle, history)
+    assert sig.signal == Signal.HOLD
+
+
 # ----------------------------------------------------------------------
 # Breakeven + ATR trailing stop (_check_exits)
 # ----------------------------------------------------------------------

@@ -181,7 +181,12 @@ class ORBEMAVWAPStrategy(StrategyBase):
         # to be the whole dataset, so every day after the first one in a given
         # run computed ORB off a stale, unrelated reference level.
         if "timestamp" in history.columns:
-            cur_date_orb = pd.Timestamp(candle["timestamp"]).date()
+            history = history.copy()
+            history["timestamp"] = pd.to_datetime(history["timestamp"], errors="coerce")
+            candle_ts = pd.to_datetime(candle.get("timestamp"), errors="coerce")
+            if pd.isna(candle_ts):
+                return hold
+            cur_date_orb = candle_ts.date()
             today_hist = history[history["timestamp"].dt.date == cur_date_orb]
         else:
             today_hist = history
