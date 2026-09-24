@@ -4,9 +4,10 @@
 # Entry point for systemd or cron.
 # Activates venv, runs the algo, handles log rotation.
 #
-# Cron entry (run at 8:55 AM IST on weekdays):
-#   55 3 * * 1-5 /path/to/angel-algo/scheduler/daily_runner.sh >> /var/log/angel-algo/cron.log 2>&1
-#   (8:55 IST = 3:25 UTC, adjust for your server timezone)
+# Cron entry (run at 8:00 AM IST on weekdays, giving main.py's warm-up
+# plenty of runway before the 09:15 market open):
+#   0 8 * * 1-5 /path/to/angel-algo/scheduler/daily_runner.sh >> /var/log/angel-algo/cron.log 2>&1
+#   (8:00 IST = 2:30 UTC, adjust for your server timezone)
 
 set -euo pipefail
 
@@ -32,20 +33,11 @@ else
     exit 1
 fi
 
-# Wait until close to market open (safety buffer)
-echo "Waiting for 9:00 AM IST ..."
-python - <<'PYEOF'
-from datetime import datetime
-import time, pytz
-
-ist = pytz.timezone("Asia/Kolkata")
-now = datetime.now(ist)
-target = now.replace(hour=9, minute=0, second=0, microsecond=0)
-if now < target:
-    wait = (target - now).total_seconds()
-    print(f"  Sleeping {wait:.0f}s until market open ...")
-    time.sleep(max(0, wait - 5))
-PYEOF
+# No pre-market sleep here — main.py's own login/instrument-master download/
+# warm-up (historical data fetch for the whole watchlist) should start as soon
+# as cron/systemd triggers this script, so it has maximum runway to finish
+# before the 09:15 market open. Actual trading is separately gated inside
+# main.py (market_open / new_entry_cutoff_time in settings.yaml).
 
 # Remove previous day's kill switch if present
 rm -f "$PROJECT_DIR/.killswitch"
