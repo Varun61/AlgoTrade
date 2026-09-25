@@ -2,7 +2,7 @@ trading:
   mode: paper
   capital: 25000
   max_concurrent_positions: 10
-  max_trades_per_day: 10
+  max_trades_per_day: null  # unlimited
   candle_interval_minutes: 15
   square_off_time: '15:15'
   new_entry_cutoff_time: '13:00'
