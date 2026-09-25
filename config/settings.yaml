@@ -19,7 +19,7 @@ market_regime:
 risk:
   per_trade_risk_pct: 1.0
   daily_loss_limit_pct: 2.0
-  max_consecutive_losses: 4
+  max_consecutive_losses: 10
   atr_stop_multiplier: 1.5
   atr_target_multiplier: 3.0
   max_position_value_pct: 50.0
