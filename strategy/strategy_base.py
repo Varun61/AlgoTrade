@@ -136,6 +136,19 @@ class StrategyBase(ABC):
         """
         pass
 
+    def discard_pending_entry(self) -> None:
+        """
+        Release an internally-committed entry that the caller decided NOT to
+        actually execute (e.g. no free position slot, order placement failed).
+        A strategy sets its internal position state as soon as it returns an
+        entry TradeSignal, before the caller has decided whether to act on it;
+        if the caller skips execution without calling this, the strategy is
+        left "phantom" in-position and will never emit a fresh signal for
+        this symbol again until its own simulated exit conditions resolve.
+        Default: no-op (stateless strategies).
+        """
+        pass
+
     def get_current_stop(self) -> float | None:
         """
         Current live stop-loss for an open position (post breakeven/trailing

@@ -33,13 +33,13 @@ class CircuitBreaker:
     Args:
         capital               : Starting capital for today's session
         daily_loss_limit_pct  : Halt at this % daily loss (e.g. 2.0 = -2%)
-        max_trades_per_day    : Hard cap on number of completed trades
+        max_trades_per_day    : Hard cap on number of completed trades (None/0 = unlimited)
         max_concurrent        : Max simultaneous open positions
         max_consecutive_losses: Pause after this many losses in a row
     """
     capital                : float
     daily_loss_limit_pct   : float = 2.0
-    max_trades_per_day     : int   = 10
+    max_trades_per_day     : int | None = 10
     max_concurrent         : int   = 3
     # 4 was tripping on ~81% of days in the full 302-symbol/365-day backtest
     # (mean losing streak 3.3, 33% win rate) — not an anomaly detector at that
@@ -73,7 +73,7 @@ class CircuitBreaker:
             return False, self.halt_reason
 
         # Max trades
-        if self.trades_today >= self.max_trades_per_day:
+        if self.max_trades_per_day and self.trades_today >= self.max_trades_per_day:
             return False, f"Max trades/day reached: {self.trades_today}"
 
         # Max concurrent positions

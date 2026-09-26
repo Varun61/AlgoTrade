@@ -78,6 +78,9 @@ class ORBEMAVWAPStrategy(StrategyBase):
         require_orb_retest   : bool  = False  (instead of entering on the raw breakout candle, wait for price to pull back near the ORB level and resume in the breakout direction; False = disabled, current live behavior)
         retest_tolerance_atr : float = 0.15   (how close, in ATR multiples, price must pull back to the ORB level to count as a retest)
         retest_timeout_candles : int = 6      (cancel a pending breakout if no confirmed retest+resume happens within this many candles)
+        target_lock_pct      : float = 0.0    (once price reaches this fraction of the distance to target, ratchet the stop to lock in target_lock_giveback_pct of the gain reached so far; 0 = disabled)
+        target_lock_giveback_pct : float = 0.7 (fraction of the gain-so-far to protect once target_lock_pct triggers, e.g. 0.7 = lock in 70%, allow 30% giveback)
+        sudden_move_atr_mult  : float = 0.0    (hard-exit immediately, ignoring the current stop-loss level, if a single candle moves against the position by this many ATRs open-to-close; 0 = disabled)
     """
 
     def __init__(self, symbol: str, token: str, **kwargs) -> None:
@@ -120,6 +123,9 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self.require_orb_retest     = bool(p.get("require_orb_retest", False))
         self.retest_tolerance_atr   = float(p.get("retest_tolerance_atr", 0.15))
         self.retest_timeout_candles = int(p.get("retest_timeout_candles", 6))
+        self.target_lock_pct           = float(p.get("target_lock_pct") or 0.0)          # 0 = disabled
+        self.target_lock_giveback_pct  = float(p.get("target_lock_giveback_pct") or 0.7)
+        self.sudden_move_atr_mult      = float(p.get("sudden_move_atr_mult") or 0.0)      # 0 = disabled
 
         # Session state
         self._position         = None     # None | "long" | "short"
@@ -158,6 +164,12 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self._initial_risk   = 0.0
         self._breakeven_done = False
         self._candles_held   = 0
+
+    def discard_pending_entry(self) -> None:
+        """Undo an entry commitment the caller chose not to execute (no free slot,
+        order failure, etc.) — same state reset as force_exit(), kept as a
+        distinct name since no real position was ever open here."""
+        self.force_exit()
 
     def get_current_stop(self) -> float | None:
         """Live stop-loss (post breakeven/trailing), for callers tracking an intrabar hard stop."""
@@ -238,7 +250,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
 
         # === EXIT checks on existing position ===
         if self._position is not None:
-            return self._check_exits(close, ema_f, ema_s, atr_val)
+            return self._check_exits(close, ema_f, ema_s, atr_val, candle_open=float(candle["open"]))
 
         # === Entry-time gate — skip new entries before a configured clock time
         # (e.g. the noisy 9:30-10:59 post-ORB window is disproportionately whipsaw-prone)
@@ -422,11 +434,23 @@ class ORBEMAVWAPStrategy(StrategyBase):
     # Exit logic
     # ---------------------------------------------------------------
 
-    def _check_exits(self, close: float, ema_f: float, ema_s: float, atr_val: float) -> TradeSignal:
+    def _check_exits(self, close: float, ema_f: float, ema_s: float, atr_val: float,
+                      candle_open: float | None = None) -> TradeSignal:
         hold = TradeSignal(signal=Signal.HOLD, symbol=self.symbol, token=self.token)
         self._candles_held += 1
 
         if self._position == "long":
+            # Sudden adverse move: a single candle crashing through this many ATRs
+            # (e.g. a gap/news spike) exits immediately instead of waiting for the
+            # (possibly much lower) stop-loss level to be hit.
+            if self.sudden_move_atr_mult and candle_open is not None and atr_val > 0:
+                candle_drop = candle_open - close
+                if candle_drop >= self.sudden_move_atr_mult * atr_val:
+                    reason = f"Sudden adverse move: ₹{candle_drop:.2f} ≥ {self.sudden_move_atr_mult}xATR — exit long"
+                    self._position = None
+                    return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
+                                       token=self.token, entry_price=self._entry_price, reason=reason)
+
             # Breakeven: once price has moved breakeven_r * initial_risk in our favor,
             # lock the stop at (or above) entry so a reversal can no longer produce a loss.
             if not self._breakeven_done and self._initial_risk > 0:
@@ -453,6 +477,18 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 if trail_sl > self._stop_loss:
                     self._stop_loss = trail_sl
 
+            # Sudden move towards target: once price has covered target_lock_pct of the
+            # distance to target, lock in target_lock_giveback_pct of the gain reached so
+            # far, so a reversal after a quick spike still exits with real profit instead
+            # of round-tripping to breakeven/stop.
+            target_distance = self._target - self._entry_price
+            if self.target_lock_pct and target_distance > 0:
+                gain = close - self._entry_price
+                if gain >= self.target_lock_pct * target_distance:
+                    locked_sl = self._entry_price + self.target_lock_giveback_pct * gain
+                    if locked_sl > self._stop_loss:
+                        self._stop_loss = locked_sl
+
             if close <= self._stop_loss:
                 reason = f"Stop hit: ₹{close:.2f} ≤ SL ₹{self._stop_loss:.2f}"
                 self._position = None
@@ -475,6 +511,14 @@ class ORBEMAVWAPStrategy(StrategyBase):
                                    token=self.token, entry_price=self._entry_price, reason=reason)
 
         elif self._position == "short":
+            if self.sudden_move_atr_mult and candle_open is not None and atr_val > 0:
+                candle_rise = close - candle_open
+                if candle_rise >= self.sudden_move_atr_mult * atr_val:
+                    reason = f"Sudden adverse move: ₹{candle_rise:.2f} ≥ {self.sudden_move_atr_mult}xATR — exit short"
+                    self._position = None
+                    return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
+                                       token=self.token, entry_price=self._entry_price, reason=reason)
+
             if not self._breakeven_done and self._initial_risk > 0:
                 if (self._entry_price - close) >= self.breakeven_r * self._initial_risk:
                     self._stop_loss = min(self._stop_loss, self._entry_price)
@@ -493,6 +537,14 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 trail_sl = close + atr_val * self.trail_atr_mult
                 if trail_sl < self._stop_loss:
                     self._stop_loss = trail_sl
+
+            target_distance = self._entry_price - self._target
+            if self.target_lock_pct and target_distance > 0:
+                gain = self._entry_price - close
+                if gain >= self.target_lock_pct * target_distance:
+                    locked_sl = self._entry_price - self.target_lock_giveback_pct * gain
+                    if locked_sl < self._stop_loss:
+                        self._stop_loss = locked_sl
 
             if close >= self._stop_loss:
                 reason = f"Stop hit: ₹{close:.2f} ≥ SL ₹{self._stop_loss:.2f}"

@@ -197,6 +197,119 @@ def test_short_breakeven_and_trailing_mirror_long():
 
 
 # ----------------------------------------------------------------------
+# Target-distance profit lock (target_lock_pct / target_lock_giveback_pct)
+# ----------------------------------------------------------------------
+
+def test_target_lock_disabled_by_default():
+    strat = make_strategy(breakeven_r=100.0, trail_atr_mult=100.0)  # keep other trails inert
+    _open_long(strat, entry=100, sl=95, target=115)  # target distance=15
+
+    # Price reaches 50%+ of target distance (100 + 0.5*15 = 107.5)
+    strat._check_exits(close=110, ema_f=10, ema_s=9, atr_val=1)
+    assert strat._stop_loss == 95  # unchanged since target_lock_pct defaults to 0/disabled
+
+
+def test_target_lock_ratchets_stop_once_threshold_reached_long():
+    strat = make_strategy(breakeven_r=100.0, trail_atr_mult=100.0,
+                           target_lock_pct=0.5, target_lock_giveback_pct=0.7)
+    _open_long(strat, entry=100, sl=95, target=115)  # target distance=15, 50% -> gain>=7.5
+
+    # Below threshold: gain=7 < 7.5 -> stop untouched
+    strat._check_exits(close=107, ema_f=10, ema_s=9, atr_val=1)
+    assert strat._stop_loss == 95
+
+    # At/above threshold: gain=10 >= 7.5 -> lock in 70% of gain = entry + 0.7*10 = 107
+    sig = strat._check_exits(close=110, ema_f=10, ema_s=9, atr_val=1)
+    assert strat._stop_loss == pytest.approx(107.0)
+    assert sig.signal == Signal.HOLD  # close(110) still above the new stop(107)
+
+
+def test_target_lock_then_reversal_exits_with_real_profit_long():
+    strat = make_strategy(breakeven_r=100.0, trail_atr_mult=100.0,
+                           target_lock_pct=0.5, target_lock_giveback_pct=0.7)
+    _open_long(strat, entry=100, sl=95, target=115)
+
+    strat._check_exits(close=110, ema_f=10, ema_s=9, atr_val=1)  # stop -> 107
+    assert strat._stop_loss == pytest.approx(107.0)
+
+    # Reversal back down through the locked stop must exit with real profit,
+    # not a breakeven/loss round-trip.
+    sig = strat._check_exits(close=106, ema_f=10, ema_s=9, atr_val=1)
+    assert sig.signal == Signal.EXIT_LONG
+    assert strat._stop_loss == pytest.approx(107.0)  # never loosens
+
+
+def test_target_lock_never_loosens_stop_short():
+    strat = make_strategy(breakeven_r=100.0, trail_atr_mult=100.0,
+                           target_lock_pct=0.5, target_lock_giveback_pct=0.7)
+    strat._position       = "short"
+    strat._entry_price    = 100.0
+    strat._stop_loss      = 105.0
+    strat._target         = 85.0   # target distance=15, 50% -> gain>=7.5
+    strat._initial_risk   = 5.0
+    strat._breakeven_done = False
+    strat._candles_held   = 0
+
+    # Threshold reached: gain=10 (100-90) -> lock stop at entry - 0.7*gain = 100-7=93
+    sig = strat._check_exits(close=90, ema_f=9, ema_s=10, atr_val=1)
+    assert strat._stop_loss == pytest.approx(93.0)
+    assert sig.signal == Signal.HOLD
+
+    # Reversal back up through the locked stop exits with real profit.
+    sig2 = strat._check_exits(close=94, ema_f=9, ema_s=10, atr_val=1)
+    assert sig2.signal == Signal.EXIT_SHORT
+    assert strat._stop_loss == pytest.approx(93.0)  # never loosens
+
+
+# ----------------------------------------------------------------------
+# Sudden single-candle adverse move (sudden_move_atr_mult)
+# ----------------------------------------------------------------------
+
+def test_sudden_move_disabled_by_default():
+    strat = make_strategy(breakeven_r=100.0, trail_atr_mult=100.0)
+    _open_long(strat, entry=100, sl=95, target=115)
+
+    # Big adverse candle (open=100, close=93, atr=1 -> 7xATR drop) but stop(95) not hit... wait close<sl too
+    sig = strat._check_exits(close=96, ema_f=10, ema_s=9, atr_val=1, candle_open=100)
+    assert sig.signal == Signal.HOLD  # disabled: no early exit, and close(96) > sl(95)
+
+
+def test_sudden_move_hard_exits_long_before_stop_hit():
+    strat = make_strategy(breakeven_r=100.0, trail_atr_mult=100.0, sudden_move_atr_mult=2.0)
+    _open_long(strat, entry=100, sl=95, target=115)  # sl not hit at close=97
+
+    # candle_open=100, close=97, atr=1 -> drop=3 >= 2*1 -> sudden-move exit, even though close(97) > sl(95)
+    sig = strat._check_exits(close=97, ema_f=10, ema_s=9, atr_val=1, candle_open=100)
+    assert sig.signal == Signal.EXIT_LONG
+    assert "Sudden adverse move" in sig.reason
+
+
+def test_sudden_move_not_triggered_below_threshold_long():
+    strat = make_strategy(breakeven_r=100.0, trail_atr_mult=100.0, sudden_move_atr_mult=2.0)
+    _open_long(strat, entry=100, sl=95, target=115)
+
+    # drop=1.5 < 2*atr(1) -> no early exit
+    sig = strat._check_exits(close=98.5, ema_f=10, ema_s=9, atr_val=1, candle_open=100)
+    assert sig.signal == Signal.HOLD
+
+
+def test_sudden_move_hard_exits_short_mirror():
+    strat = make_strategy(breakeven_r=100.0, trail_atr_mult=100.0, sudden_move_atr_mult=2.0)
+    strat._position       = "short"
+    strat._entry_price    = 100.0
+    strat._stop_loss      = 105.0
+    strat._target         = 85.0
+    strat._initial_risk   = 5.0
+    strat._breakeven_done = False
+    strat._candles_held   = 0
+
+    # candle_open=100, close=103, atr=1 -> rise=3 >= 2*1 -> exit short, even though close(103) < sl(105)
+    sig = strat._check_exits(close=103, ema_f=9, ema_s=10, atr_val=1, candle_open=100)
+    assert sig.signal == Signal.EXIT_SHORT
+    assert "Sudden adverse move" in sig.reason
+
+
+# ----------------------------------------------------------------------
 # Time-based (max holding period) exit
 # ----------------------------------------------------------------------
 
@@ -263,6 +376,28 @@ def test_reset_clears_orb_and_position_state():
     strat.reset()
 
     assert strat._position is None
+
+
+def test_discard_pending_entry_releases_phantom_position():
+    # Simulates: strategy detects a valid breakout and commits internal
+    # state, but the caller (main.py) never actually executes it (e.g. no
+    # free position slot) and calls discard_pending_entry() instead.
+    strat = make_strategy()
+    _open_long(strat, entry=100, sl=95, target=115)
+    strat._breakeven_done = True
+    strat._candles_held   = 3
+
+    strat.discard_pending_entry()
+
+    assert strat._position is None
+    assert strat._entry_price == 0.0
+    assert strat._stop_loss == 0.0
+    assert strat._target == 0.0
+    assert strat._initial_risk == 0.0
+    assert strat._breakeven_done is False
+    assert strat._candles_held == 0
+    # Now free to evaluate fresh entries again instead of running phantom exit checks.
+    assert strat.get_position_direction() is None
     assert strat._orb_high is None
     assert strat._orb_low is None
 

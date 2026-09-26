@@ -2,13 +2,13 @@ trading:
   mode: paper
   capital: 25000
   max_concurrent_positions: 10
-  max_trades_per_day: 10
+  max_trades_per_day: null  # unlimited
   candle_interval_minutes: 15
-  square_off_time: '15:15'
+  square_off_time: '15:10'
   # Entries after this only get < 2hr (max_holding_candles=8 * 15min) runway
   # before square-off, so late trades increasingly get cut short by EOD
   # instead of their own exit logic — accepted tradeoff for more setups.
-  new_entry_cutoff_time: '14:00'
+  new_entry_cutoff_time: '14:15'
   market_open: '09:15'
   market_close: '15:30'
   auto_execute: true
@@ -28,7 +28,7 @@ risk:
   data_collection_mode: true
   daily_loss_limit_pct: 2.0
   # Backtest-calibrated (see risk/circuit_breaker.py) — 4 tripped on ~81% of days
-  max_consecutive_losses: 8
+  max_consecutive_losses: 10
   data_collection_overrides:
     daily_loss_limit_pct: 100.0
     max_consecutive_losses: 999
@@ -58,12 +58,10 @@ strategy:
   min_adx: 15
   min_ema_trend_factor: 8
   confirmation_candles: 0
-  # null/empty = disabled (current live behavior, unchanged — trade all session hours).
-  # e.g. "11:00" skips entries before that clock time. Evidenced but NOT yet
-  # validated via backtest — the 9:30-10:59 post-ORB window shows a materially
-  # lower win rate (~30%) than later hours (~40%) across multiple test runs;
-  # test via --min-entry-time before enabling live.
-  min_entry_time: null
+  # null/empty = disabled. "11:00" skips entries before that clock time —
+  # validated: 90-day pure-signal backtest showed the 9:30-10:59 post-ORB
+  # window at ~36% win rate vs ~45% for 11:00+, dragging down the whole day.
+  min_entry_time: '11:00'
   # Widen the ATR stop for entries before early_session_end_time (e.g. "10:30"),
   # to give whipsaw-prone early entries more room. null/empty = disabled
   # (current live behavior, unchanged — same atr_stop_multiplier all session).
@@ -77,6 +75,20 @@ strategy:
   require_orb_retest: false
   retest_tolerance_atr: 0.15
   retest_timeout_candles: 6
+  # Once price reaches this fraction of the distance to target, lock in
+  # target_lock_giveback_pct of the gain reached so far (tighter than the
+  # normal ATR trail) so a quick spike-then-reversal still exits with real
+  # profit. 0/null = disabled (current live behavior). NOT yet validated —
+  # test before enabling live.
+  target_lock_pct: null
+  target_lock_giveback_pct: 0.7
+  # Hard-exit immediately (ignoring the current stop-loss level) if a single
+  # candle moves against the position by this many ATRs open-to-close (e.g. a
+  # gap/news spike) rather than waiting for the stop to be hit. 0/null = disabled
+  # (current live behavior). NOT yet validated — a similar early-tighten idea
+  # (early_cut_tighten_stop_r) regressed twice in past backtests; test via
+  # a backtest sweep before enabling live.
+  sudden_move_atr_mult: null
 watchlist:
   instruments:
   - exchange: NSE

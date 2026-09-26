@@ -204,6 +204,9 @@ def run():
             min_adx             = strategy_cfg.get("min_adx", 0.0),
             min_ema_trend_factor = strategy_cfg.get("min_ema_trend_factor", 0.0),
             confirmation_candles = strategy_cfg.get("confirmation_candles", 0),
+            target_lock_pct          = strategy_cfg.get("target_lock_pct") or 0.0,
+            target_lock_giveback_pct = strategy_cfg.get("target_lock_giveback_pct") or 0.7,
+            sudden_move_atr_mult     = strategy_cfg.get("sudden_move_atr_mult") or 0.0,
         )
         strategies[token] = strat
 
@@ -248,7 +251,11 @@ def run():
     no_setup_alert_sent = False    
     alerted_tokens      = set()    # Prevent duplicate Telegram alerts for the same setup
     locked_tokens       = set()    # Setups we've fully given up on for today (executed, or non-retryable skip)
-    alerted_directions  : dict[str, str] = {}  # token -> "long"/"short" for entries actually alerted
+    daily_halt_reasons_alerted = set()  # Non-retryable circuit-breaker reasons already alerted once today
+    alerted_directions  : dict[str, str] = {}  # token -> "long"/"short" for entries that got a REAL order placed
+                                                # (not just Telegram-alerted) — gates _handle_exit so we never
+                                                # send a phantom EXIT for a signal that was skipped pre-order
+                                                # (cutoff/regime/breaker/qty=0).
     current_ltps        : dict[str, float] = {}
 
     # NEW: Signal buffering for Top Pick logic
@@ -378,7 +385,6 @@ def run():
                         if alert_key not in alerted_tokens:
                             alerted_tokens.add(alert_key)
                             alerter.send_trade_alert(top_signal)
-                        alerted_directions[top_signal.token] = "long" if top_signal.signal == Signal.BUY else "short"
 
                     # ----------------------------------------------------
                     # Auto-execution (only when trading.auto_execute: true)
@@ -391,6 +397,7 @@ def run():
                         logger.info(f"[AutoExec] Skipped {top_signal.symbol}: {market_regime_reason}")
                         alerter.send_order_skipped(top_signal, f"Unfavorable market regime: {market_regime_reason}")
                         locked_tokens.add(alert_key)   # session-level regime verdict won't change today
+                        strategies[top_signal.token].discard_pending_entry()
                         continue
                     if (cutoff_h is not None
                             and (now.hour > cutoff_h or (now.hour == cutoff_h and now.minute >= cutoff_m))):
@@ -398,6 +405,7 @@ def run():
                                     f"({new_entry_cutoff}) — not enough runway before square-off.")
                         alerter.send_order_skipped(top_signal, f"Past new-entry cutoff ({new_entry_cutoff})")
                         locked_tokens.add(alert_key)   # cutoff only gets further away, never retryable
+                        strategies[top_signal.token].discard_pending_entry()
                         continue
                     can, block_reason = breaker.can_trade()
                     if not can:
@@ -418,11 +426,21 @@ def run():
                                 rotated = can
                         if not rotated and not can:
                             logger.warning(f"[AutoExec] Skipped {top_signal.symbol}: {block_reason}")
-                            alerter.send_order_skipped(top_signal, block_reason)
-                            # Room ("Max concurrent positions") can free up later today — retryable.
-                            # Daily halt/cap reasons (loss limit, max trades/day, consecutive losses) won't change.
+                            # Room ("Max concurrent positions") can free up later today — retryable, and
+                            # worth alerting every time since it's specific to that setup. Daily halt/cap
+                            # reasons (loss limit, max trades/day, consecutive losses) won't change for
+                            # the rest of the day, so alert once and then just log the rest to avoid spam.
                             if "Max concurrent positions" not in block_reason:
                                 locked_tokens.add(alert_key)
+                                if block_reason not in daily_halt_reasons_alerted:
+                                    alerter.send_order_skipped(top_signal, block_reason)
+                                    daily_halt_reasons_alerted.add(block_reason)
+                            else:
+                                alerter.send_order_skipped(top_signal, block_reason)
+                            # No real position was opened — release the phantom in-position state so
+                            # this symbol keeps getting evaluated fresh (with current price/stop/target)
+                            # on later candles instead of silently "holding" an unexecuted trade for hours.
+                            strategies[top_signal.token].discard_pending_entry()
                             continue
                     if position_mgr.has_position(top_signal.token):
                         logger.warning(f"[AutoExec] Already in a position for {top_signal.symbol} — skipping.")
@@ -433,6 +451,7 @@ def run():
                     if qty <= 0:
                         logger.warning(f"[AutoExec] Qty computed as 0 for {top_signal.symbol} — skipping.")
                         alerter.send_order_skipped(top_signal, "Computed qty was 0 (stop distance too tight for risk budget)")
+                        strategies[top_signal.token].discard_pending_entry()
                         continue
 
                     txn = "BUY" if top_signal.signal == Signal.BUY else "SELL"
@@ -452,10 +471,12 @@ def run():
                         )
                         breaker.on_trade_open()
                         alerter.send_order_placed(order_id, top_signal, qty)
+                        alerted_directions[top_signal.token] = "long" if txn == "BUY" else "short"
                         locked_tokens.add(alert_key)   # executed — one trade per direction per symbol per day
                     else:
                         alerter.send_order_failed(top_signal.symbol, "OrderManager.place_order returned None")
                         # transient API failure — leave unlocked, retry next candle
+                        strategies[top_signal.token].discard_pending_entry()
 
                 # Reset buffer
                 signal_buffer.clear()
