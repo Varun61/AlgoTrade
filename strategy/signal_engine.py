@@ -21,6 +21,15 @@ scored better (neither design was a clean sweep):
   5. ADX trend strength      — per-symbol ADX regime strength (redesigned;
                                 replaces the old wrong-signed `volume` factor)
 
+Plus 3 uncapped BONUS factors (only matter when the 5 core factors above don't
+already sum to 100 — they're tie-breakers for marginal setups, not a rebalance
+of the tuned core weights; ported from a public ORB reference project's
+confluence design, unvalidated against this codebase's own trade history):
+  6. Volume surge   — last bar's volume vs. its 20-bar average (up to 10 pts)
+  7. Multi-strategy  — agreement with an independent SMA(50) trend check (up to 10 pts)
+  8. Sector tailwind — peer-symbol (same NSE industry) momentum today, fed in
+                        externally via set_sector_momentum() (up to 8 pts)
+
 Only signals with confidence >= MIN_CONFIDENCE_THRESHOLD are emitted as BUY/SELL.
 Below threshold: HOLD is returned (not worth alerting).
 
@@ -81,6 +90,8 @@ class ORBEMAVWAPStrategy(StrategyBase):
         target_lock_pct      : float = 0.0    (once price reaches this fraction of the distance to target, ratchet the stop to lock in target_lock_giveback_pct of the gain reached so far; 0 = disabled)
         target_lock_giveback_pct : float = 0.7 (fraction of the gain-so-far to protect once target_lock_pct triggers, e.g. 0.7 = lock in 70%, allow 30% giveback)
         sudden_move_atr_mult  : float = 0.0    (hard-exit immediately, ignoring the current stop-loss level, if a single candle moves against the position by this many ATRs open-to-close; 0 = disabled)
+        orb_range_min_pct     : float = 0.0    (skip the whole session if the opening range is < this % of price — too tight, no real breakout edge; 0 = disabled)
+        orb_range_max_pct     : float = 100.0  (skip the whole session if the opening range is > this % of price — too wide, poor reward:risk; 100 = disabled)
     """
 
     def __init__(self, symbol: str, token: str, **kwargs) -> None:
@@ -126,6 +137,15 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self.target_lock_pct           = float(p.get("target_lock_pct") or 0.0)          # 0 = disabled
         self.target_lock_giveback_pct  = float(p.get("target_lock_giveback_pct") or 0.7)
         self.sudden_move_atr_mult      = float(p.get("sudden_move_atr_mult") or 0.0)      # 0 = disabled
+        self.orb_range_min_pct         = float(p.get("orb_range_min_pct") or 0.0)          # 0 = disabled
+        self.orb_range_max_pct         = float(p.get("orb_range_max_pct") or 100.0)        # 100 = disabled
+        self.sma_trend_period          = int(p.get("sma_trend_period", 50))                # multi-strategy bonus factor
+        # Discretionary EMA-crossover exit. On by default (legacy behavior), but
+        # it fires a full exit the moment EMA9 crosses back through EMA21, which
+        # on a 15-min chart routinely closes a still-valid trend-follow trade on
+        # a single pullback candle — capping winners well short of the ATR
+        # target. Set false to rely purely on stop/target/trail/time exits.
+        self.ema_exit                  = bool(p.get("ema_exit", True))
 
         # Session state
         self._position         = None     # None | "long" | "short"
@@ -134,12 +154,18 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self._target           = 0.0
         self._orb_high         = None
         self._orb_low          = None
+        self._orb_range_valid  = True     # narrow-range filter verdict, set once per session
         self._initial_risk     = 0.0      # |entry - initial stop|, used for breakeven trigger
         self._breakeven_done   = False
         self._candles_held     = 0
         self._pending_breakout  = None     # None | "long" | "short" — awaiting ORB retest
         self._pending_candles   = 0
         self._retest_seen       = False
+        self._sector_momentum_pct = 0.0    # set externally via set_sector_momentum()
+
+    def set_sector_momentum(self, pct: float) -> None:
+        """Peer-symbol (same industry) average % move today, for the sector-tailwind factor."""
+        self._sector_momentum_pct = pct
 
     def reset(self) -> None:
         self._position   = None
@@ -148,6 +174,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
         self._target      = 0.0
         self._orb_high    = None
         self._orb_low     = None
+        self._orb_range_valid = True
         self._initial_risk   = 0.0
         self._breakeven_done = False
         self._candles_held   = 0
@@ -213,10 +240,26 @@ class ORBEMAVWAPStrategy(StrategyBase):
         ema_s        = ema_s_series.iloc[-1]
         rsi_val      = rsi(closes, self.rsi_period).iloc[-1]
         atr_val      = atr(highs, lows, closes, self.atr_period).iloc[-1]
-        vwap_v       = vwap(highs, lows, closes, volumes).iloc[-1]
+        # VWAP must reset each session. history here has an integer index (built
+        # via pd.concat(ignore_index=True) live, and .iloc slicing in backtest),
+        # so vwap() would otherwise fall into its cumulative fallback and compute
+        # a meaningless multi-day (whole-warm-up) VWAP. Re-index the series by
+        # timestamp so vwap() groups by calendar day and resets at each open.
+        if "timestamp" in history.columns:
+            _dt_idx = pd.to_datetime(history["timestamp"], errors="coerce")
+            vwap_v   = float(vwap(highs.set_axis(_dt_idx), lows.set_axis(_dt_idx),
+                                  closes.set_axis(_dt_idx), volumes.set_axis(_dt_idx)).iloc[-1])
+        else:
+            vwap_v   = float(vwap(highs, lows, closes, volumes).iloc[-1])
         adx_val      = adx(highs, lows, closes, self.adx_period).iloc[-1]
         avg_vol      = float(volumes.iloc[-self.vol_avg_periods:].mean())
         cur_vol      = float(candle["volume"])
+        sma_trend_val    = None
+        sma_trend_rising = False
+        if n > self.sma_trend_period:
+            sma_trend        = closes.rolling(self.sma_trend_period).mean()
+            sma_trend_val    = sma_trend.iloc[-1]
+            sma_trend_rising = sma_trend_val > sma_trend.iloc[-2]
 
         # --- ORB (set once per session) ---
         # NOTE: `history` is the FULL cumulative multi-day history (warm-up +
@@ -241,7 +284,11 @@ class ORBEMAVWAPStrategy(StrategyBase):
 
         if self._orb_high is None and n_today >= self.orb_candles:
             self._orb_high, self._orb_low = opening_range(today_hist, self.orb_candles)
-            logger.info(f"[{self.symbol}] ORB set: H={self._orb_high:.2f}, L={self._orb_low:.2f}")
+            ref_price = float(today_hist["close"].iloc[self.orb_candles - 1])
+            range_pct = (self._orb_high - self._orb_low) / ref_price * 100 if ref_price else 0.0
+            self._orb_range_valid = self.orb_range_min_pct <= range_pct <= self.orb_range_max_pct
+            logger.info(f"[{self.symbol}] ORB set: H={self._orb_high:.2f}, L={self._orb_low:.2f}, "
+                        f"range={range_pct:.2f}% ({'valid' if self._orb_range_valid else 'FILTERED — skipping session'})")
 
         if self._orb_high is None or n_today <= self.orb_candles:
             return hold
@@ -251,6 +298,11 @@ class ORBEMAVWAPStrategy(StrategyBase):
         # === EXIT checks on existing position ===
         if self._position is not None:
             return self._check_exits(close, ema_f, ema_s, atr_val, candle_open=float(candle["open"]))
+
+        # === Narrow-range gate — skip the whole session if the opening range itself
+        # was too tight (no real breakout edge) or too wide (poor reward:risk)
+        if not self._orb_range_valid:
+            return hold
 
         # === Entry-time gate — skip new entries before a configured clock time
         # (e.g. the noisy 9:30-10:59 post-ORB window is disproportionately whipsaw-prone)
@@ -310,7 +362,8 @@ class ORBEMAVWAPStrategy(StrategyBase):
             sl     = close - (atr_val * stop_mult)
             target = close + (atr_val * self.atr_target_mult)
             score, factors = self._score_long(
-                close, ema_f, ema_s, rsi_val, vwap_v, atr_val, adx_val
+                close, ema_f, ema_s, rsi_val, vwap_v, atr_val, adx_val,
+                cur_vol, avg_vol, sma_trend_val, sma_trend_rising
             )
 
             if score < self.min_confidence:
@@ -346,7 +399,8 @@ class ORBEMAVWAPStrategy(StrategyBase):
             sl     = close + (atr_val * stop_mult)
             target = close - (atr_val * self.atr_target_mult)
             score, factors = self._score_short(
-                close, ema_f, ema_s, rsi_val, vwap_v, atr_val, adx_val
+                close, ema_f, ema_s, rsi_val, vwap_v, atr_val, adx_val,
+                cur_vol, avg_vol, sma_trend_val, sma_trend_rising
             )
 
             if score < self.min_confidence:
@@ -504,7 +558,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
                                    token=self.token, entry_price=self._entry_price, reason=reason)
-            if ema_f < ema_s:
+            if self.ema_exit and ema_f < ema_s:
                 reason = "EMA bearish crossover — exit long"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_LONG, symbol=self.symbol,
@@ -561,7 +615,7 @@ class ORBEMAVWAPStrategy(StrategyBase):
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
                                    token=self.token, entry_price=self._entry_price, reason=reason)
-            if ema_f > ema_s:
+            if self.ema_exit and ema_f > ema_s:
                 reason = "EMA bullish crossover — exit short"
                 self._position = None
                 return TradeSignal(signal=Signal.EXIT_SHORT, symbol=self.symbol,
@@ -594,7 +648,8 @@ class ORBEMAVWAPStrategy(StrategyBase):
         return round(max(floor, 20.0 - (x - hi) / max(decay_span, 1e-9) * (20.0 - floor)), 1)
 
     def _score_long(self, close, ema_f, ema_s, rsi_val, vwap_v,
-                    atr_val, adx_val) -> tuple[float, dict]:
+                    atr_val, adx_val, cur_vol=0.0, avg_vol=1.0,
+                    sma_trend_val=None, sma_trend_rising=False) -> tuple[float, dict]:
         factors = {}
         atr_safe = atr_val + 1e-9
 
@@ -630,11 +685,21 @@ class ORBEMAVWAPStrategy(StrategyBase):
         # 5. ADX trend-strength regime (direction-agnostic — same for long/short).
         factors["adx_trend"] = self._adx_score(adx_val)
 
+        # Bonus 6. Volume surge — last bar vs. 20-bar avg volume, ramps 1.0x-1.5x.
+        factors["volume_surge"] = round(min(10.0, max(0.0, (cur_vol / (avg_vol + 1e-9) - 1.0) / 0.5 * 10.0)), 1)
+
+        # Bonus 7. Multi-strategy agreement — independent SMA(50) trend check.
+        factors["multi_strategy"] = 10.0 if (sma_trend_val is not None and close > sma_trend_val and sma_trend_rising) else 0.0
+
+        # Bonus 8. Sector tailwind — peer-symbol (same industry) momentum today.
+        factors["sector_tailwind"] = round(min(8.0, max(0.0, self._sector_momentum_pct / 0.3 * 8.0)), 1)
+
         total = min(100.0, sum(factors.values()))
         return total, factors
 
     def _score_short(self, close, ema_f, ema_s, rsi_val, vwap_v,
-                     atr_val, adx_val) -> tuple[float, dict]:
+                     atr_val, adx_val, cur_vol=0.0, avg_vol=1.0,
+                     sma_trend_val=None, sma_trend_rising=False) -> tuple[float, dict]:
         factors = {}
         atr_safe = atr_val + 1e-9
 
@@ -662,6 +727,15 @@ class ORBEMAVWAPStrategy(StrategyBase):
 
         # 5. ADX trend-strength regime
         factors["adx_trend"] = self._adx_score(adx_val)
+
+        # Bonus 6. Volume surge — direction-agnostic, same as long.
+        factors["volume_surge"] = round(min(10.0, max(0.0, (cur_vol / (avg_vol + 1e-9) - 1.0) / 0.5 * 10.0)), 1)
+
+        # Bonus 7. Multi-strategy agreement — independent SMA(50) trend check, short side.
+        factors["multi_strategy"] = 10.0 if (sma_trend_val is not None and close < sma_trend_val and not sma_trend_rising) else 0.0
+
+        # Bonus 8. Sector tailwind — peer-symbol momentum against the short direction.
+        factors["sector_tailwind"] = round(min(8.0, max(0.0, -self._sector_momentum_pct / 0.3 * 8.0)), 1)
 
         total = min(100.0, sum(factors.values()))
         return total, factors

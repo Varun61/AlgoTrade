@@ -171,3 +171,40 @@ def ema_crossover(series: pd.Series, fast: int, slow: int) -> pd.Series:
     cross[(diff > 0) & (prev_diff <= 0)] =  1
     cross[(diff < 0) & (prev_diff >= 0)] = -1
     return cross
+
+
+# ------------------------------------------------------------------
+# Supertrend (trend-following overlay)
+# ------------------------------------------------------------------
+
+def supertrend(high: pd.Series, low: pd.Series, close: pd.Series,
+               period: int = 10, multiplier: float = 2.0) -> pd.Series:
+    """
+    Supertrend direction series: +1 = uptrend (price above the line),
+    -1 = downtrend. Uses ATR(period) bands with the standard carry-forward rule.
+    Returns an int Series aligned to `close` (NaN-safe; early bars default to +1).
+    """
+    atr_v = atr(high, low, close, period)
+    hl2 = (high + low) / 2
+    upper = hl2 + multiplier * atr_v
+    lower = hl2 - multiplier * atr_v
+
+    close_v = close.to_numpy()
+    upper_v = upper.to_numpy()
+    lower_v = lower.to_numpy()
+    fu = upper.to_numpy(copy=True)
+    fl = lower.to_numpy(copy=True)
+    for i in range(1, len(close_v)):
+        fu[i] = upper_v[i] if (upper_v[i] < fu[i-1] or close_v[i-1] > fu[i-1]) else fu[i-1]
+        fl[i] = lower_v[i] if (lower_v[i] > fl[i-1] or close_v[i-1] < fl[i-1]) else fl[i-1]
+
+    import numpy as _np
+    d = _np.ones(len(close_v), dtype=int)
+    for i in range(1, len(close_v)):
+        if close_v[i] > fu[i-1]:
+            d[i] = 1
+        elif close_v[i] < fl[i-1]:
+            d[i] = -1
+        else:
+            d[i] = d[i-1]
+    return pd.Series(d, index=close.index)

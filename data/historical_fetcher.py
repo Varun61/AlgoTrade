@@ -123,6 +123,15 @@ class HistoricalFetcher:
                     logger.info(f"[HistoricalFetcher] Got {len(df)} candles for token {symbol_token}")
                     return df
 
+                # Valid response but ZERO candles = there genuinely is no data in
+                # this date range (e.g. before the stock listed, or an all-holiday
+                # window). This is NOT an error — return immediately instead of
+                # burning 5 retries with escalating backoff (~60s) per empty chunk,
+                # which was making recently-listed symbols crawl and spam errors.
+                if resp and resp.get("status") and not resp["data"]:
+                    time.sleep(self._delay)
+                    return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+
                 if _is_rate_limited(resp):
                     backoff = max(self._delay, 1.0) * (2 ** attempt)
                     logger.warning(

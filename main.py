@@ -75,6 +75,25 @@ def run():
     symbols = [i["symbol"] for i in watchlist]
 
     # ------------------------------------------------------------------
+    # Hard safety gate — refuse real-money trading unless explicitly
+    # authorized. The strategy has NEGATIVE backtested expectancy across the
+    # full cached year (see PLAN.md / config comment), so live is blocked by
+    # default. Paper mode is always allowed (it places no real orders).
+    # ------------------------------------------------------------------
+    if mode == "live":
+        if not bool(trading_cfg.get("live_trading_authorized", False)):
+            raise SystemExit(
+                "Refusing to start in LIVE mode: trading.live_trading_authorized is false. "
+                "The current strategy has no positive backtested edge — see PLAN.md. "
+                "Set it to true only after a backtested edge is demonstrated."
+            )
+        if risk_cfg.get("data_collection_mode", False):
+            raise SystemExit(
+                "Refusing to start in LIVE mode with risk.data_collection_mode=true "
+                "(circuit breakers are loosened for research). Set it to false for live."
+            )
+
+    # ------------------------------------------------------------------
     # Imports
     # ------------------------------------------------------------------
     from auth.session_manager       import SessionManager
@@ -86,7 +105,7 @@ def run():
     from monitoring.logger          import AlgoLogger
     from monitoring.alerts          import TelegramAlerter
     from execution.order_manager    import OrderManager
-    from execution.position_manager import PositionManager, find_weakest_position
+    from execution.position_manager import PositionManager, find_weakest_position, expected_breakeven_move
     from risk.position_sizer        import PositionSizer
     from risk.circuit_breaker       import CircuitBreaker
 
@@ -110,10 +129,7 @@ def run():
     allow_position_rotation = bool(trading_cfg.get("allow_position_rotation", False))
     rotation_min_confidence = float(trading_cfg.get("rotation_min_confidence", 85))
     order_mgr    = OrderManager(smart_obj=obj) if auto_execute else None
-    position_mgr = PositionManager(
-        brokerage_pct=risk_cfg.get("brokerage_pct", 0.03),
-        brokerage_cap=risk_cfg.get("brokerage_cap", 20.0),
-    ) if auto_execute else None
+    position_mgr = PositionManager() if auto_execute else None
     sizer        = PositionSizer(
         capital=capital, per_trade_risk_pct=risk_cfg["per_trade_risk_pct"],
         max_position_value=capital * risk_cfg.get("max_position_value_pct", 50.0) / 100,
@@ -137,9 +153,29 @@ def run():
         max_trades_per_day=trading_cfg["max_trades_per_day"],
         max_concurrent=trading_cfg["max_concurrent_positions"],
         max_consecutive_losses=max_consecutive_losses,
+        capital_floor_buffer_pct=risk_cfg.get("capital_floor_buffer_pct", 0.0),
     ) if auto_execute else None
     token_exchange = {str(inst["token"]): inst["exchange"] for inst in watchlist}
     logger.info(f"Auto-execute: {'ENABLED — orders will be placed (' + mode.upper() + ' mode)' if auto_execute else 'disabled — alerts only'}")
+
+    # Sector-tailwind confidence factor: map each symbol to its NSE industry
+    # (from the index constituent lists) so we can average peer-symbol intraday
+    # momentum per industry and feed it back into each strategy instance.
+    import csv
+    symbol_industry: dict[str, str] = {}
+    for csv_path in Path("data/index_lists").glob("*.csv"):
+        with open(csv_path, newline="") as f:
+            for row in csv.DictReader(f):
+                if row.get("Symbol") and row.get("Industry"):
+                    symbol_industry[row["Symbol"]] = row["Industry"]
+    token_industry: dict[str, str] = {}
+    industry_tokens: dict[str, list[str]] = {}
+    for inst in watchlist:
+        industry = symbol_industry.get(inst["symbol"])
+        if industry:
+            token_industry[str(inst["token"])] = industry
+            industry_tokens.setdefault(industry, []).append(str(inst["token"]))
+    day_ref_price: dict[str, float] = {}   # token -> first LTP seen today, for %-move-so-far
 
     # ------------------------------------------------------------------
     # 2. Instrument master
@@ -207,6 +243,8 @@ def run():
             target_lock_pct          = strategy_cfg.get("target_lock_pct") or 0.0,
             target_lock_giveback_pct = strategy_cfg.get("target_lock_giveback_pct") or 0.7,
             sudden_move_atr_mult     = strategy_cfg.get("sudden_move_atr_mult") or 0.0,
+            orb_range_min_pct        = strategy_cfg.get("orb_range_min_pct") or 0.0,
+            orb_range_max_pct        = strategy_cfg.get("orb_range_max_pct") or 100.0,
         )
         strategies[token] = strat
 
@@ -274,6 +312,7 @@ def run():
         pnl = None
         if auto_execute and position_mgr.has_position(token):
             pos = position_mgr.get_position(token)
+            risk_amt = pos["qty"] * abs(pos["entry_price"] - pos["stop_loss"])
             exit_txn = "SELL" if pos["direction"] == "long" else "BUY"
             exit_order_id = order_mgr.place_order(
                 symbol=pos["symbol"], token=token,
@@ -282,7 +321,7 @@ def run():
                 client_ref=f"{token}_{exit_txn}_exit_{datetime.now().strftime('%Y%m%d')}",
             )
             pnl = position_mgr.close_position(token, exit_price, exit_order_id or "")
-            breaker.on_trade_close(pnl)
+            breaker.on_trade_close(pnl, risk_amount=risk_amt)
             alerter.send_order_closed(exit_order_id or "?", symbol, exit_price, pnl)
 
         alerter.send_exit_alert(
@@ -345,6 +384,7 @@ def run():
                 if auto_execute and position_mgr.open_count() > 0:
                     for pos in position_mgr.get_all_positions():
                         ltp = current_ltps.get(pos["token"], pos["entry_price"])
+                        risk_amt = pos["qty"] * abs(pos["entry_price"] - pos["stop_loss"])
                         exit_txn = "SELL" if pos["direction"] == "long" else "BUY"
                         exit_order_id = order_mgr.place_order(
                             symbol=pos["symbol"], token=pos["token"],
@@ -353,8 +393,20 @@ def run():
                             client_ref=f"{pos['token']}_{exit_txn}_eod_{now.strftime('%Y%m%d')}",
                         )
                         pnl = position_mgr.close_position(pos["token"], ltp, exit_order_id or "")
-                        breaker.on_trade_close(pnl)
+                        breaker.on_trade_close(pnl, risk_amount=risk_amt)
                         alerter.send_order_closed(exit_order_id or "?", pos["symbol"], ltp, pnl)
+                        # Log an EXIT record too (send_order_closed doesn't) so the
+                        # alert log can reconstruct the trade — previously EOD closes
+                        # left entries "open" forever in tools/evaluate_pnl.py.
+                        alerter.send_exit_alert(
+                            symbol=pos["symbol"],
+                            direction=pos["direction"],
+                            exit_price=ltp,
+                            entry_price=pos["entry_price"],
+                            reason="EOD square-off",
+                            pnl=pnl,
+                        )
+                        alerted_directions.pop(pos["token"], None)
                 break
 
             # ----------------------------------------------------------
@@ -407,7 +459,8 @@ def run():
                         locked_tokens.add(alert_key)   # cutoff only gets further away, never retryable
                         strategies[top_signal.token].discard_pending_entry()
                         continue
-                    can, block_reason = breaker.can_trade()
+                    prospective_risk = capital * risk_cfg["per_trade_risk_pct"] / 100
+                    can, block_reason = breaker.can_trade(prospective_risk=prospective_risk)
                     if not can:
                         rotated = False
                         if (allow_position_rotation
@@ -422,7 +475,7 @@ def run():
                                             f"{top_signal.symbol} (confidence={top_signal.confidence:.0f})")
                                 _handle_exit(weakest_token, weakest_pos["symbol"], weakest_pos["direction"],
                                              ltp, weakest_pos["entry_price"], "Rotated out for higher-confidence setup")
-                                can, block_reason = breaker.can_trade()
+                                can, block_reason = breaker.can_trade(prospective_risk=prospective_risk)
                                 rotated = can
                         if not rotated and not can:
                             logger.warning(f"[AutoExec] Skipped {top_signal.symbol}: {block_reason}")
@@ -469,8 +522,14 @@ def run():
                             stop_loss=top_signal.stop_loss, target=top_signal.target,
                             order_id=order_id,
                         )
-                        breaker.on_trade_open()
+                        breaker.on_trade_open(
+                            risk_amount=qty * abs(top_signal.entry_price - top_signal.stop_loss)
+                        )
                         alerter.send_order_placed(order_id, top_signal, qty)
+                        breakeven_pct = expected_breakeven_move(top_signal.entry_price, qty)
+                        target_pct = abs(top_signal.target - top_signal.entry_price) / top_signal.entry_price * 100
+                        logger.info(f"[AutoExec] {top_signal.symbol} breakeven move needed: {breakeven_pct:.3f}% "
+                                    f"(target move: {target_pct:.3f}%)")
                         alerted_directions[top_signal.token] = "long" if txn == "BUY" else "short"
                         locked_tokens.add(alert_key)   # executed — one trade per direction per symbol per day
                     else:
@@ -496,6 +555,7 @@ def run():
 
             token = tick["token"]
             current_ltps[token] = tick["ltp"]
+            day_ref_price.setdefault(token, tick["ltp"])
 
             # ----------------------------------------------------------
             # Intrabar stop/target check — runs on every tick, not just at
@@ -539,6 +599,14 @@ def run():
             strat = strategies.get(token)
             if strat is None:
                 continue
+
+            industry = token_industry.get(token)
+            if industry:
+                peers = [t for t in industry_tokens.get(industry, [])
+                         if t in current_ltps and t in day_ref_price and day_ref_price[t]]
+                if peers:
+                    avg_pct = sum((current_ltps[t] / day_ref_price[t] - 1) * 100 for t in peers) / len(peers)
+                    strat.set_sector_momentum(avg_pct)
 
             signal = strat.on_candle_close(new_row.iloc[0], history)
             algo_logger.log_signal(signal)

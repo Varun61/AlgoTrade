@@ -45,23 +45,41 @@ class CircuitBreaker:
     # (mean losing streak 3.3, 33% win rate) — not an anomaly detector at that
     # level, just a near-daily halt. 8 trips on ~24.5% of days instead.
     max_consecutive_losses : int   = 8
+    # Capital-floor guard (best-effort, worst-case-aware). When > 0, a NEW entry
+    # is blocked if — assuming every currently-open position AND the prospective
+    # new one hit their stops — the day's realized+worst-case-unrealized loss
+    # would fall below (day_start_capital * capital_floor_buffer_pct%). 0 =
+    # disabled. This is a SOFT gate (not a hard halt): it clears again as open
+    # positions close or move to breakeven. It is best-effort only — gaps and
+    # slippage past a stop can still breach the floor.
+    capital_floor_buffer_pct : float = 0.0
 
     # Runtime state (reset at session start)
     realized_pnl           : float = field(default=0.0, init=False)
     trades_today           : int   = field(default=0,   init=False)
     consecutive_losses     : int   = field(default=0,   init=False)
     open_positions         : int   = field(default=0,   init=False)
+    committed_risk         : float = field(default=0.0, init=False)  # sum of open worst-case losses
+    day_start_capital      : float = field(default=0.0, init=False)
     status                 : CircuitStatus = field(default=CircuitStatus.OK, init=False)
     halt_reason            : str   = field(default="",  init=False)
+
+    def __post_init__(self) -> None:
+        self.day_start_capital = self.capital
 
     # ------------------------------------------------------------------
     # Gate check — call before every new order
     # ------------------------------------------------------------------
 
-    def can_trade(self) -> tuple[bool, str]:
+    def can_trade(self, prospective_risk: float = 0.0) -> tuple[bool, str]:
         """
         Returns (True, "") if a new trade is allowed.
         Returns (False, reason_string) if blocked.
+
+        Args:
+            prospective_risk: worst-case ₹ loss of the trade being considered
+                (qty * stop_distance). Only used by the capital-floor guard;
+                defaults to 0.0 so existing callers are unaffected.
         """
         if self.status == CircuitStatus.HALTED:
             return False, f"Circuit HALTED: {self.halt_reason}"
@@ -85,19 +103,30 @@ class CircuitBreaker:
             self._halt(f"Consecutive losses: {self.consecutive_losses}")
             return False, self.halt_reason
 
+        # Capital-floor guard (soft, worst-case-aware) — does NOT halt the day.
+        if self.capital_floor_buffer_pct > 0:
+            floor = -(self.capital_floor_buffer_pct / 100) * self.day_start_capital
+            worst_case = self.realized_pnl - self.committed_risk - prospective_risk
+            if worst_case < floor:
+                return False, (f"Capital-floor guard: worst-case day P&L ₹{worst_case:.0f} "
+                               f"would breach floor ₹{floor:.0f} "
+                               f"(realized ₹{self.realized_pnl:.0f}, open risk ₹{self.committed_risk:.0f})")
+
         return True, ""
 
     # ------------------------------------------------------------------
     # State update methods — call from position_manager / order_tracker
     # ------------------------------------------------------------------
 
-    def on_trade_open(self) -> None:
+    def on_trade_open(self, risk_amount: float = 0.0) -> None:
         self.open_positions += 1
+        self.committed_risk += max(0.0, risk_amount)
 
-    def on_trade_close(self, pnl: float) -> None:
+    def on_trade_close(self, pnl: float, risk_amount: float = 0.0) -> None:
         self.realized_pnl    += pnl
         self.trades_today    += 1
         self.open_positions   = max(0, self.open_positions - 1)
+        self.committed_risk   = max(0.0, self.committed_risk - max(0.0, risk_amount))
 
         if pnl < 0:
             self.consecutive_losses += 1
@@ -126,10 +155,12 @@ class CircuitBreaker:
         """Call at the start of each trading day."""
         if new_capital:
             self.capital = new_capital
+        self.day_start_capital  = self.capital
         self.realized_pnl       = 0.0
         self.trades_today       = 0
         self.consecutive_losses = 0
         self.open_positions     = 0
+        self.committed_risk     = 0.0
         self.status             = CircuitStatus.OK
         self.halt_reason        = ""
         logger.info("[CircuitBreaker] Session reset.")

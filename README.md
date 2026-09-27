@@ -1,9 +1,49 @@
-# Angel One SmartAPI Intraday Algo Trader
-
-Production-grade, fully automatable intraday algo trading system for Angel One SmartAPI.
-**Strategy: ORB + EMA 9/21 + VWAP filter + RSI filter + ATR-based stops**
+# Angel One SmartAPI Algo Trading
 
 > ⚠️ **This is real money software. Always backtest first. Start in paper mode. Scale gradually.**
+
+---
+
+## 📍 Current direction (read this first)
+
+This project was built around an **intraday equity ORB strategy** (below). We then
+built a proper portfolio backtester and validated it (and ~12 other technical
+strategies) over **5 years of data**. The honest finding: **no public technical
+intraday pattern had an edge that survives costs** (gross profit factor ≈ 1.0
+across ORB, VWAP-reversion, gap, prev-day momentum, supertrend, etc.).
+
+We then tested the **volatility risk premium** and found a real, structural edge:
+NIFTY implied vol exceeds realized vol ~79% of days. A **defined-risk weekly iron
+condor** (sell ~2% OTM, buy 1% wings) was positive in a synthetic backtest **every
+year 2021–2026**, at affordable margin. It is now running in **PAPER mode on real
+prices** to validate before any live trading. See [`PLAN.md`](PLAN.md) for the full
+research trail, results, and the confidence-gated plan.
+
+### Run the options paper system (one command, once a day after 3:35 PM IST)
+```bash
+cd /path/to/AlgoTrade && source .venv/bin/activate && python -m tools.options_daily
+```
+It does everything itself (collect real option data → open the weekly paper
+condor at real prices → settle at expiry → print running P&L). **No live orders.**
+Idempotent — safe to run repeatedly. Schedule via `scheduler/options_runner.sh`
+at **15:35 IST / 10:05 UTC, Mon–Fri** (NOT pre-market — prices would be stale).
+
+- Paper trades log: `logs/options_paper.jsonl`
+- Check summary: `python -m tools.run_options_paper --action status`
+- Real option data collector (also run daily): `python -m tools.collect_options`
+
+Key modules: `strategy/options_pricing.py` (Black-Scholes), `backtest/options_bt.py`
+(synthetic iron-condor backtester), `execution/options_paper.py` (paper engine),
+`tools/options_daily.py` (the one-command runner).
+
+---
+
+## Legacy: Intraday Equity ORB system (kept, not profitable)
+
+Fully automatable intraday algo for Angel One SmartAPI.
+**Strategy: ORB + EMA 9/21 + VWAP filter + RSI filter + ATR-based stops.**
+Retained for the backtester and as reference; it has **no validated edge** and
+live trading is hard-gated off (`trading.live_trading_authorized: false`).
 
 ---
 

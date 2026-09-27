@@ -21,23 +21,87 @@ Data model:
 
 from __future__ import annotations
 import logging
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# Zerodha equity intraday (MIS) rate card, verified against
+# https://zerodha.com/brokerage-calculator. Real round-trip cost is ~2x
+# brokerage alone once STT/exchange/SEBI/GST/stamp are included — a
+# brokerage-only estimate materially understates cost drag.
+_BROKERAGE_RATE = 0.0003     # 0.03%, per executed order (both legs)
+_BROKERAGE_CAP  = 20.0       # ₹20 per executed order
+_STT_RATE       = 0.00025    # 0.025%, sell side only
+_EXCHANGE_RATE  = 0.0000322  # 0.00322%, total turnover
+_SEBI_RATE      = 0.000001   # ₹10/crore, total turnover
+_GST_RATE       = 0.18       # on brokerage + exchange + SEBI
+_STAMP_RATE     = 0.00003    # 0.003%, buy side only
+
+
+@dataclass
+class CostBreakdown:
+    brokerage: float
+    stt: float
+    exchange: float
+    sebi: float
+    gst: float
+    stamp: float
+
+    @property
+    def total(self) -> float:
+        return self.brokerage + self.stt + self.exchange + self.sebi + self.gst + self.stamp
+
+
+def zerodha_intraday_costs(buy_value: float, sell_value: float) -> CostBreakdown:
+    """Full round-trip cost for one buy + one sell of the given notional values."""
+    brokerage = min(buy_value * _BROKERAGE_RATE, _BROKERAGE_CAP) + \
+                min(sell_value * _BROKERAGE_RATE, _BROKERAGE_CAP)
+    stt       = sell_value * _STT_RATE
+    turnover  = buy_value + sell_value
+    exchange  = turnover * _EXCHANGE_RATE
+    sebi      = turnover * _SEBI_RATE
+    gst       = _GST_RATE * (brokerage + exchange + sebi)
+    stamp     = buy_value * _STAMP_RATE
+    return CostBreakdown(brokerage, stt, exchange, sebi, gst, stamp)
+
+
+# Zerodha DELIVERY (CNC) equity rate card — for multi-day swing holds. Differs
+# materially from intraday: zero brokerage, but STT is 0.1% on BOTH legs (vs
+# 0.025% sell-only intraday), stamp 0.015% buy-side, plus a flat DP charge on the
+# sell leg. Verified against https://zerodha.com/brokerage-calculator.
+_DELIVERY_BROKERAGE = 0.0        # Zerodha CNC delivery = free brokerage
+_DELIVERY_STT_RATE  = 0.001      # 0.1% on buy AND sell
+_DELIVERY_STAMP     = 0.00015    # 0.015%, buy side only
+_DP_CHARGE_SELL     = 15.34      # flat ₹ per scrip on the sell leg (incl. GST)
+
+
+def zerodha_delivery_costs(buy_value: float, sell_value: float) -> CostBreakdown:
+    """Full round-trip cost for a delivery (CNC) buy + sell — for swing trades."""
+    brokerage = _DELIVERY_BROKERAGE
+    stt       = (buy_value + sell_value) * _DELIVERY_STT_RATE
+    turnover  = buy_value + sell_value
+    exchange  = turnover * _EXCHANGE_RATE
+    sebi      = turnover * _SEBI_RATE
+    gst       = _GST_RATE * (brokerage + exchange + sebi)
+    stamp     = buy_value * _DELIVERY_STAMP
+    # Fold the flat DP sell charge into the "brokerage" bucket (it's the only
+    # flat, non-turnover component) so CostBreakdown.total stays correct.
+    brokerage += _DP_CHARGE_SELL
+    return CostBreakdown(brokerage, stt, exchange, sebi, gst, stamp)
+
+
+def expected_breakeven_move(entry_price: float, qty: int) -> float:
+    """Minimum % move (in either direction) needed just to clear round-trip costs."""
+    notional = entry_price * qty
+    if notional <= 0:
+        return 0.0
+    return zerodha_intraday_costs(notional, notional).total / notional * 100
+
 
 class PositionManager:
-    """
-    Maintains the current open positions and realized P&L for the session.
+    """Maintains the current open positions and realized P&L for the session."""
 
-    Args:
-        brokerage_pct: % of order value charged per executed order (entry + exit).
-        brokerage_cap: max brokerage per order, in ₹. Defaults to 0 (no cost modeled)
-                       so existing callers/tests that don't pass these are unaffected.
-    """
-
-    def __init__(self, brokerage_pct: float = 0.0, brokerage_cap: float = float("inf")) -> None:
-        self.brokerage_pct = brokerage_pct
-        self.brokerage_cap = brokerage_cap
+    def __init__(self) -> None:
         self._positions: dict[str, dict] = {}   # token -> position
         self._realized_pnl: float = 0.0
         self._closed_trades: list[dict] = []
@@ -91,24 +155,24 @@ class PositionManager:
         else:
             gross_pnl = (pos["entry_price"] - exit_price) * qty
 
-        brokerage = (self._order_brokerage(pos["entry_price"] * qty)
-                     + self._order_brokerage(exit_price * qty))
-        pnl = gross_pnl - brokerage
+        buy_value  = pos["entry_price"] * qty if pos["direction"] == "long" else exit_price * qty
+        sell_value = exit_price * qty if pos["direction"] == "long" else pos["entry_price"] * qty
+        costs = zerodha_intraday_costs(buy_value, sell_value)
+        pnl = gross_pnl - costs.total
 
         pos["gross_pnl"]      = gross_pnl
-        pos["brokerage"]      = brokerage
+        pos["costs"]          = costs.total
         pos["realized_pnl"]   = pnl
         pos["exit_order_id"]  = order_id
         self._realized_pnl   += pnl
         self._closed_trades.append(pos)
 
         emoji = "✅" if pnl >= 0 else "❌"
-        logger.info(f"[PositionMgr] {emoji} Closed {pos['symbol']} | P&L=₹{pnl:.2f} (gross ₹{gross_pnl:.2f} − brokerage ₹{brokerage:.2f}) "
+        logger.info(f"[PositionMgr] {emoji} Closed {pos['symbol']} | P&L=₹{pnl:.2f} (gross ₹{gross_pnl:.2f} − costs ₹{costs.total:.2f}: "
+                    f"brokerage ₹{costs.brokerage:.2f}, STT ₹{costs.stt:.2f}, exchange ₹{costs.exchange:.2f}, "
+                    f"SEBI ₹{costs.sebi:.4f}, GST ₹{costs.gst:.2f}, stamp ₹{costs.stamp:.2f}) "
                     f"| Entry={pos['entry_price']:.2f} Exit={exit_price:.2f}")
         return pnl
-
-    def _order_brokerage(self, order_value: float) -> float:
-        return min(order_value * self.brokerage_pct / 100, self.brokerage_cap)
 
     # ------------------------------------------------------------------
     # Queries

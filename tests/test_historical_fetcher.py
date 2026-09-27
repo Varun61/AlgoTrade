@@ -133,8 +133,13 @@ def test_fetch_non_rate_limit_exception_still_retries_and_recovers():
     assert len(df) == 1
 
 
-def test_fetch_empty_data_treated_as_bad_response_and_retries():
+def test_fetch_valid_empty_response_returns_immediately_without_retry():
+    # A valid response with zero candles = no data in this range (pre-listing /
+    # all-holiday window). It must return an empty df in ONE call, NOT retry —
+    # retrying wasted ~60s of backoff per empty chunk on recently-listed symbols.
     responses = [{"status": True, "data": []}, _success_resp(n=1)]
     fetcher = _make_fetcher(responses)
     df = fetcher.fetch("NSE", "123", 15, datetime(2026, 9, 1), datetime(2026, 9, 22))
-    assert len(df) == 1
+    assert df.empty
+    assert list(df.columns) == ["timestamp", "open", "high", "low", "close", "volume"]
+    assert fetcher.obj.calls == 1   # returned on the first (empty) response, no retry

@@ -166,3 +166,60 @@ def test_open_positions_never_goes_negative():
     cb = CircuitBreaker(capital=100_000)
     cb.on_trade_close(pnl=100.0)  # close without a matching open
     assert cb.open_positions == 0
+
+
+# ----------------------------------------------------------------------
+# Capital-floor guard (worst-case-aware soft gate)
+# ----------------------------------------------------------------------
+
+def test_capital_floor_disabled_by_default():
+    cb = CircuitBreaker(capital=25_000)  # capital_floor_buffer_pct defaults to 0
+    cb.on_trade_open(risk_amount=5_000)
+    ok, _ = cb.can_trade(prospective_risk=5_000)
+    assert ok is True  # guard off — no floor check
+
+
+def test_capital_floor_blocks_when_worst_case_breaches_floor():
+    # floor = 1% of 25000 = -250. One open trade risking 200 + a new trade
+    # risking 200 => worst case -400 < -250 => blocked.
+    cb = CircuitBreaker(capital=25_000, capital_floor_buffer_pct=1.0)
+    cb.on_trade_open(risk_amount=200)
+    ok, reason = cb.can_trade(prospective_risk=200)
+    assert ok is False
+    assert "Capital-floor guard" in reason
+    # It is a SOFT gate, not a hard halt.
+    assert cb.status == CircuitStatus.OK
+
+
+def test_capital_floor_allows_within_budget():
+    cb = CircuitBreaker(capital=25_000, capital_floor_buffer_pct=2.0)  # floor = -500
+    cb.on_trade_open(risk_amount=200)
+    ok, _ = cb.can_trade(prospective_risk=200)  # worst case -400 >= -500
+    assert ok is True
+
+
+def test_capital_floor_clears_as_open_risk_is_released():
+    cb = CircuitBreaker(capital=25_000, capital_floor_buffer_pct=1.0)  # floor = -250
+    cb.on_trade_open(risk_amount=200)
+    assert cb.can_trade(prospective_risk=200)[0] is False
+    # The open position closes at breakeven, releasing its committed risk.
+    cb.on_trade_close(pnl=0.0, risk_amount=200)
+    assert cb.committed_risk == 0.0
+    assert cb.can_trade(prospective_risk=200)[0] is True
+
+
+def test_capital_floor_counts_realized_losses():
+    cb = CircuitBreaker(capital=25_000, capital_floor_buffer_pct=2.0)  # floor = -500
+    cb.on_trade_close(pnl=-400.0)  # already down 400
+    # No open risk, but a new 200-risk trade would make worst case -600 < -500.
+    ok, reason = cb.can_trade(prospective_risk=200)
+    assert ok is False
+    assert "Capital-floor guard" in reason
+
+
+def test_reset_session_restores_capital_floor_state():
+    cb = CircuitBreaker(capital=25_000, capital_floor_buffer_pct=1.0)
+    cb.on_trade_open(risk_amount=500)
+    cb.reset_session()
+    assert cb.committed_risk == 0.0
+    assert cb.day_start_capital == 25_000

@@ -1,88 +1,366 @@
-# Plan: Path to Safe Auto-Execution (Paper → Live)
+# Plan: Validate an Edge Before Any Live Trading
 
-Move AlgoTrade from notification-only (top-2 Telegram alerts) to auto-executing trades, staged as: validate in paper mode → go live with small, protected capital and a consistent concurrent-position/risk budget. No live web-search tool was available; SEBI/compliance specifics are from trained knowledge and flagged for verification with the broker.
+> **Status change (this revision):** A proper portfolio backtester was built and
+> run over the full cached year. **The current ORB+EMA+VWAP+RSI strategy has
+> negative expectancy in every quarter tested.** The plan is no longer "paper →
+> live"; it is "find a real edge first". Live trading is now hard-gated off in
+> code (`trading.live_trading_authorized: false`).
 
-## Current state (verified in code)
-- Watchlist: ~90 NSE symbols (symbols.txt → tools/build_watchlist.py → config/settings.yaml tokens)
-- Signals scored 0-100 (6 factors); `MIN_CONFIDENCE_THRESHOLD=70` (strategy/signal_engine.py#L32)
-- main.py buffers entry signals 3s, sorts by confidence, sends only **top 2** (main.py#L246)
-- Auto-execution fully wired but disabled: `trading.auto_execute: false` (config/settings.yaml); gated at main.py#L85-L86
-- OrderManager (execution/order_manager.py) has idempotency (client_ref dedup) + retry/backoff for live `placeOrder`; paper mode simulates instant fills
-- PositionSizer (risk/position_sizer.py#L58): `qty = floor(capital * risk_pct/100 / stop_distance)` — sizes each trade to risk a fixed **% of capital**, not an equal ₹ capital slice. Keep this model (already backtested); do NOT switch to splitting capital into N equal parts.
-- CircuitBreaker (risk/circuit_breaker.py): daily loss 2% (L48), max 10 trades/day (L49), max 4 consecutive losses (L50), max 3 concurrent positions (L51) — all % or count based, no ₹ floor
-- Backtest engine already models slippage (0.05%) + brokerage (₹40/order) realistically
+---
 
-## ⚠️ Key finding
-With very small capital (e.g. ₹1,000) and 0.5-1% per-trade risk, `risk_amount` (₹5-10) is smaller than the ATR-based stop distance for most liquid NSE stocks → `PositionSizer.compute_qty()` returns **0** most of the time. A tiny live capital pool mostly won't generate any live trades under the current risk model.
+## STRATEGY LEADERBOARD — everything tested (1yr cache, ~290 NSE names, real costs)
 
-## Capital allocation / concurrent positions (decided)
-User asked whether ₹25,000 should be split into N equal parts (e.g. 10 x ₹2,500) and traded that way.
-**Recommendation: no.** Reasons:
-- Flat ₹40/order brokerage eats a much bigger % of a small slice (1.6% of a ₹2,500 slice vs 0.48% of an ₹8,300 slice).
-- The signal engine realistically produces only ~2 high-confidence (≥70) setups on a typical day — 10 slots would mostly sit idle in cash.
-- Risk-based sizing (existing PositionSizer) already normalizes risk per trade regardless of price; capital-splitting is a worse, redundant model.
+Best profit factor (PF) per family. PF > 1.0 = breakeven; need > ~1.3 to trade.
+**None cleared 1.0 durably.** Fades/reversion (0.77–0.80) beat breakout/
+continuation (0.33–0.62) — i.e. on this data momentum is harmful and reversion
+is only mildly protective. The one "profitable" result (daily swing H2) was
+market beta, not edge (it lost in H1).
 
-**What actually matters is how many positions are open *at the same time*.** Existing caps:
-`max_concurrent_positions = 3`, `max_trades_per_day = 10` (sequential total, not concurrent).
+| Strategy (best config)                     | PF   | Win% | Verdict            |
+|--------------------------------------------|------|------|--------------------|
+| ORB breakout (original)                    | 0.44 | 33%  | neg every quarter  |
+| ORB + fakeout filters (retest/confirm/range)| 0.67*| 43%  | *overfit (0.29–1.09 by qtr) |
+| ORB 1:1 range-sweep                        | 0.62 | 39%  | negative           |
+| VWAP mean-reversion (intraday)             | 0.46 | 42%  | negative           |
+| Intraday momentum (1st-30m→close)          | 0.48 | 35%  | negative           |
+| Gap fade                                   | 0.57 | 34%  | negative           |
+| Gap + first-candle continuation ("9:16")   | 0.80 | 42%  | negative (best-ish)|
+| Prev-day momentum continuation (leaders)   | 0.58 | 28%  | negative           |
+| Prev-day reversal / fade                   | 0.77 | 36%  | negative (best fade)|
+| Afternoon 2PM breakout                     | 0.33 | 31%  | negative (worst)   |
+| Supertrend + intraday strength             | 0.79 | 39%  | negative           |
+| Inside-bar / NR7 breakout                  | 0.69 | 42%  | negative           |
+| Daily swing RSI(2) (positional/overnight)  | 1.12 H2 / 0.14 H1 | 51–64% | regime-dependent = beta |
 
-There's a consistency gap: 3 concurrent × 0.5% risk each = 1.5% worst-case same-day loss, which exceeds the
-1.0% daily-loss cap chosen for the live pilot (see Phase 2 below). Fix:
-- **During the live pilot: `max_concurrent_positions = 2`**, not 3. 2 × 0.5% = 1.0%, exactly matching the tightened daily-loss cap — no silent gap in the safety math.
-- After the pilot proves stable, raise back to 3 concurrent, paired with either per-trade risk ~0.33% or a relaxed daily-loss cap of 1.5% (decide later, not now).
-- `max_trades_per_day = 10` stays as-is (turnover cap, independent of concurrency).
+**X-post strategies skipped, with reasons:** ICT liquidity-sweep + IFVG
+(discretionary/multi-timeframe, not faithfully mechanizable); EMA + premarket
+high/low (no premarket data in the cache — starts 09:15); pullback-to-HOD/LOD
+with hammer/engulfing (discretionary candlesticks — tested mechanical proxies);
+2PM options CE/PE version (options Greeks/liquidity not modeled — tested the
+underlying-equity breakout proxy, PF 0.33); ORB "which extreme formed first"
+(needs sub-15-min data).
 
-## Phases
+### ⚠️ MULTI-YEAR (5yr, 2021-2026) VALIDATION — the definitive result
+With the 5-year data (Phase 1 done), the best two intraday leads were validated
+across every calendar year AND cost-decomposed:
 
-### Phase 1 — Paper-mode validation
-1. Flip `trading.auto_execute: true`, `trading.mode: paper` in config/settings.yaml, capital set to the eventual live target (₹25,000 — see Phase 2) so sizing math matches reality. **Applied**: `max_concurrent_positions` kept at **3** per explicit user decision (not lowered to 2) — the existing `daily_loss_limit_pct` circuit breaker still caps worst-case same-day loss regardless of how many positions are technically allowed open.
-2. Run unattended for 3-4 weeks (~15-20 trading days).
-3. Daily reconciliation via the already-built `tools/evaluate_pnl.py` (parses monitoring/alerts.py logged alerts) against likely real fills from historical data.
-4. Exit criteria: circuit breaker verified to trip at least once, zero unhandled exceptions, paper P&L directionally consistent with backtest.
+- **Regime-switched prev-day** (continuation in up-regimes / fade in down): PF
+  0.52-0.66 in *every* year 2022-2026. The regime switch actually HURT — always
+  fading beat switching to continuation in all years. The user's "trade
+  yesterday's leaders (continuation)" hypothesis is empirically wrong intraday.
+- **Pure fade** (fade yesterday's biggest movers): PF 0.61-0.73 every year,
+  remarkably consistent (win ~42%). A *genuine, stable* behavioral effect — but
+  still net-negative.
+- **Cost decomposition (the decisive test):** fade GROSS profit factor (zero
+  costs, zero slippage) = **0.96** — still below breakeven. avg win ₹78 vs avg
+  loss ₹58 at 42% win. **The raw edge is ~zero; costs then make it clearly
+  losing.** No execution improvement can create an edge that isn't there.
 
-### Phase 2 — Capital & risk model for live (*depends on Phase 1 passing*)
-- **Live starting capital: ₹25,000** (not ₹1,000 — avoids the qty=0 problem; not ₹50,000 — pilot goal is validating mechanics, not maximizing P&L)
-- **per_trade_risk_pct: 0.5%** for the first ~2 weeks live (half the backtested 1.0%), stepping up to full 1.0% once live behavior matches paper
-- **daily_loss_limit_pct: 1.0%** for the same pilot window (tighter than default 2.0%), relaxed back to 2.0% once stable
-- **max_concurrent_positions: 2** for the pilot (see Capital Allocation section) — raise to 3 only after the pilot is stable, together with a matching risk/daily-loss adjustment
-- New **capital-floor circuit breaker** in risk/circuit_breaker.py: track `day_start_capital`; block new entries if realized+worst-case-unrealized would breach `day_start_capital - buffer`. Explicitly a best-effort soft safety net, **not a guarantee** — gaps/slippage past SL can still breach it.
+**Conclusion:** across 13 strategies, 5 years / multiple regimes, and full cost
+decomposition, NO public-technical intraday strategy on this NSE universe has a
+gross edge large enough to survive costs. This is now a robust, multi-regime,
+cost-adjusted finding — not a one-year artifact.
 
-### Phase 3 — Compliance (Angel One / SEBI) (*parallel with Phase 1/2, hard gate before live*)
-1. Confirm with Angel One whether API auto-trading requires static-IP whitelisting and/or broker-side "Algo ID" order tagging (SEBI's algo-trading framework for retail API users) — verify current process directly with the broker.
-2. If required, add the tag to the `params` dict in execution/order_manager.py#L96-L107.
-3. Do not flip `trading.mode: live` until this is confirmed complete.
+### ✅ BREAKTHROUGH — OPTIONS PREMIUM-SELLING has a real edge (unlike chart patterns)
+After all directional strategies failed, we tested the volatility-risk-premium:
+- **VRP probe (NIFTY + India VIX, 2021-2026):** implied 1-day move (0.95%) >
+  realized (0.63%); IV exceeded realized on **78.8% of days**. A genuine
+  structural edge — options are systematically overpriced.
+- **Synthetic weekly iron-condor backtester** (`backtest/options_bt.py`, Black-
+  Scholes priced with VIX as IV, expiry intrinsic settlement, defined-risk
+  wings, costs, trading-day time convention):
+  - Iron-fly (sell ATM): marginal (+₹43k, sharpe 0.14, negative 2026).
+  - **Iron-condor (sell ~2% OTM, 1% wings): +₹196k, win 82%, sharpe 1.35,
+    margin ~₹13k, and POSITIVE EVERY YEAR 2022-2026.** First strategy in the
+    whole project that is consistent across regimes with affordable, DEFINED
+    risk (fits ₹25k capital).
+  - Naked straddle scored higher (sharpe 1.71) but needs ~₹238k margin and has
+    uncapped tail risk — not viable/safe at this capital.
 
-### Phase 4 — Live pilot & ops (*depends on Phase 2 + 3*)
-1. Flip `trading.mode: live` with Phase-2 capital/risk/concurrency settings.
-2. Add a manual kill-switch checked each loop iteration in main.py (e.g. a `config/KILL_SWITCH` file or settings flag).
-3. Daily reconciliation via `tools/evaluate_pnl.py` against SmartAPI's actual order/trade book.
-4. Confirm existing alerts (circuit break, order placed/failed/closed, session start/stop, errors) fire correctly during the pilot.
-5. After a stable pilot window, gradually raise capital / risk_pct / max_concurrent_positions together, keeping the worst-case-simultaneous-loss math consistent with the daily-loss cap.
+**CRITICAL caveats (why this is a validated hypothesis, NOT yet tradeable):**
+1. SYNTHETIC prices (BS + VIX). Real options have **skew** (OTM puts pricier
+   than symmetric BS → less put credit) and **fat tails** (real crashes breach
+   short strikes far more than lognormal → the model UNDERSTATES tail losses).
+   An 82% win rate is exactly the profile that hides tail risk.
+2. Weekly-grouping is an expiry proxy; no real bid/ask, liquidity, or intra-week
+   gap path modeled.
+3. Angel's master is live-only → no historical option data to backtest for real.
 
-## Strategy backlog / future exploration
-- **VWAP Mean Reversion** (candidate, not built): fade price back toward VWAP when it's extended by k std-dev — same equity universe, same risk engine (`risk/position_sizer.py`, `risk/circuit_breaker.py`) as ORB, just a new strategy class alongside `ORBEMAVWAPStrategy` in `strategy/signal_engine.py`. VWAP is already computed in `strategy/indicators.py`, currently only used as an ORB directional filter, not its own entry signal. To be prototyped/backtested only *after* the ORB pilot shows positive expectancy.
-- **09:20 AM Short Straddle**: rejected for now — requires options (ATM Call+Put), a different instrument type than the current equity-only stack (`data/instrument_master.py`, `execution/order_manager.py`), has theoretically unbounded risk on the short strikes, and there's no options-Greeks/margin risk model in `risk/` to support it.
-- **Scalping / Momentum Grid**: rejected for now — needs tick-level/sub-second execution; current loop runs on 15-min candles with a 3-second signal buffer, and Angel One's per-trade brokerage would likely erase the edge on rapid micro-trades.
-- Applied today as part of Phase 1 tuning (already live in code/config, not yet re-validated with fresh paper data): `atr_target_multiplier` 2.5→3.0 (wider R:R), `max_holding_candles` 8→12, plus a new cascading early-exit (`early_cut_candles: 5`, `early_cut_min_r: 0.3` in `strategy/signal_engine.py`) that cuts stalled trades early instead of waiting out the full holding window, based on real alert data showing most exits were time-stops that cut winners short.
+**Next steps to confirm (before any real money):**
+1. **Forward-collect real NIFTY option data** (start now; the fetcher works on
+   live option tokens) and re-run the condor on REAL prices over several weeks.
+2. Stress-test explicitly against the worst historical gap weeks with fat-tail
+   assumptions, not lognormal.
+3. Paper-trade the defined-risk iron condor; only then consider live, small.
+This is the one direction with a real edge — pursue it with real-data validation.
 
-## Relevant files
-- `config/settings.yaml` — capital, risk_pct, daily_loss_limit_pct, max_concurrent_positions knobs
-- `risk/circuit_breaker.py` — capital-floor check, tighter live-pilot thresholds, concurrency cap
-- `risk/position_sizer.py` — reference only; qty=0 issue originates in `compute_qty()` (L58)
-- `main.py` — add kill-switch check
-- `execution/order_manager.py` — Algo ID param in live `place_order()` params if required (L96-107)
-- `tools/evaluate_pnl.py` — reuse for paper-validation and live reconciliation
-- `tests/test_risk.py` — capital-floor and concurrency-cap test cases
+### PAPER-MODE OPTIONS SYSTEM (built — real-data validation, NO live orders)
+To validate the condor on REAL prices (the synthetic BS+VIX result is only
+directional), a paper-trading pipeline is now in place:
 
-## Verification
-1. `pytest tests/ -v` after each phase (repo currently at 71 passed)
-2. Phase 1: 3-4 week paper run, zero unhandled exceptions, ≥1 verified circuit-breaker trip
-3. Phase 2: manual forced losing-streak test confirms capital-floor breaker halts new entries, and confirms 2-concurrent × 0.5% risk matches the 1.0% daily-loss cap in practice
-4. Phase 4: cross-check `tools/evaluate_pnl.py` vs SmartAPI trade book for first live week
+- **`tools/collect_options.py`** — daily forward-collector. Fetches real NIFTY
+  weekly option candles (ATM ± N strikes, CE+PE) into `data/.cache/options/`,
+  idempotent. Run daily to build the real dataset.
+- **`execution/options_paper.py`** — paper iron-condor engine (leg selection,
+  entry credit, defined-risk expiry P&L, JSONL book). Pure + fully tested.
+- **`tools/run_options_paper.py`** — paper runner (NO orders):
+    - `--action open`  : opens a paper condor for the nearest expiry at REAL LTP.
+    - `--action settle`: settles expired condors vs real NIFTY close.
+    - `--action status`: running paper P&L summary.
+  Logs to `logs/options_paper.jsonl`.
+
+**How to run it forward (suggested cron, IST):**
+```
+# collect real option data daily after close
+30 15 * * 1-5  cd <repo> && .venv/bin/python -m tools.collect_options
+# open the weekly paper condor Monday morning; settle on expiry afternoon
+05 10 * * 1    cd <repo> && .venv/bin/python -m tools.run_options_paper --action open --offset-pct 2.0 --wing-pct 1.0
+35 15 * * 2,4  cd <repo> && .venv/bin/python -m tools.run_options_paper --action settle
+```
+Verified end-to-end live: opens with real premiums, logs P&L, places no orders.
+
+### Confidence-gated cleanup (NOT done yet — per user)
+Once the paper condor shows a positive, tail-survivable edge on REAL data over
+several weeks, THEN: remove the failed intraday strategy code (ORB confidence
+scoring, VWAP-reversion, research_intraday/xpost_extra strategies, swing) and the
+now-unused intraday knobs in settings.yaml, and make the options condor the
+primary system. Kept for now as the validated backtester + fallback; cleanup is
+deliberately deferred until paper results justify committing to options only.
+
+### Synthesis / root cause
+Opposite strategies (momentum AND mean-reversion) both lose → at 15-min on this
+liquid universe, price is ~unpredictable **net of costs**. Universal signature:
+~30–45% win, avg-loss > avg-win. Two real blockers: **(1) data** — 1 year is a
+single regime and 15-min is too coarse for several setups' entry timing;
+**(2) cost drag + efficiency** — small intraday moves vs fixed round-trip costs on
+signals everyone can see.
+
+### Agreed path forward (see end of file for the phased plan)
+1. **Data upgrade** — ✅ DONE. `tools/fetch_history.py` (resumable) pulled **5
+   years of 15-min** data for all 302 symbols into `data/.cache/hist_15m/`
+   (260 with full 5yr, 42 shorter = recent listings; 0 empty/corrupt). Angel
+   serves ~5yr of 15-min and ~1yr+ of 1-min. Backtester now takes `cache_dir`.
+   Spans the 2022 correction + 2023-24 bull + 2025-26 → real regime variation.
+2. **Regime signal** (equal-weight index vs MAs) + relative-strength ranking +
+   volume filters + limit-order execution modeling.
+3. **Test the prioritized lead**: a *regime-switched prev-day* strategy
+   (continuation in uptrends, fade in down/chop; break-of-yesterday's-high entry;
+   RS selection) — the synthesis of the user's idea + our fade finding.
+4. **Decision gate**: PF > ~1.3 across multiple regimes out-of-sample → paper →
+   live; else pivot (options/microstructure/alt-data) or stay notification-only.
+
+---
+
+## What changed and why
+
+### 1. A real backtester now exists
+The old `backtest/engine.py` was **single-symbol only** — it ran each symbol
+independently with the *full* capital, so it could never model the portfolio
+dynamics the config actually controls (concurrency, top-N confidence ranking,
+rotation), and it required a live Angel One login. Its aggregate P&L was, by its
+own docstring, "not a realistic portfolio P&L".
+
+New: **`backtest/portfolio.py`** (+ runner `tools/run_portfolio_backtest.py`).
+It replays the whole watchlist on one shared timeline and reproduces the live
+`main.py` model: one shared capital pool + circuit breaker, `max_concurrent`
+cap, per-candle confidence ranking, optional rotation, `new_entry_cutoff` /
+EOD square-off, the **same** `execution/position_manager.zerodha_intraday_costs`
+cost model used live, plus entry/exit slippage, intrabar (high/low) stop/target,
+and the exact `ORBEMAVWAPStrategy` code path. It runs offline from the 302
+cached 15-min CSVs in `data/.cache/backtest/` — no login needed.
+
+### 2. The verdict (portfolio backtest, cleanest config)
+Cleanest config = no `early_cut`, no discretionary EMA-flip exit, wider trail,
+`min_confidence` 75, `max_concurrent` 3, VWAP bug fixed:
+
+| Period      | Trades | Win% | Profit Factor | Return |
+|-------------|-------:|-----:|--------------:|-------:|
+| FULL YEAR   |  1338  | 33.9 | 0.44          | −93.8% |
+| 2025 Q4     |   311  | 32.5 | 0.38          | −29.6% |
+| 2026 Q1     |   347  | 35.2 | 0.51          | −31.7% |
+| 2026 Q2     |   343  | 35.3 | 0.48          | −32.4% |
+| 2026 Q3     |   311  | 32.5 | 0.39          | −33.5% |
+
+Negative in **every** quarter. Profit factor ~0.44 (needs > 1.0 to break even,
+> ~1.3 to be worth trading net of costs). Both longs and shorts lose, so it is
+not a directional-regime artifact — 15-min opening-range breakouts on a broad
+~300-name NSE universe get faded intraday.
+
+### 3. Root cause (why no lever fixed it)
+- **Win rate ~33% with realized avg-loss > avg-win** = double-negative. Losers
+  ran to the full 1.5-ATR stop; winners were capped well below the ATR target.
+- **The confidence score is not predictive.** In both the live alert logs and
+  the backtest, raising `min_confidence` did *not* raise win rate — the 80+
+  bucket did *worse* (PF 0.33). The 8-factor score is mostly noise.
+- Every exit/target/trail/time-stop/concurrency permutation stayed net-negative.
+  This is an **entry-quality** problem; exit tuning cannot rescue it.
+
+---
+
+## Changes applied in this revision (all validated, 122 tests green)
+
+### Correctness / safety fixes (unambiguously good regardless of edge)
+- **VWAP intraday-reset bug fixed** (`strategy/signal_engine.py`). `history` has
+  an integer index, so `vwap()` was silently using its cumulative fallback and
+  computing a ~30-day VWAP instead of a per-session one — meaning `vwap_filter`
+  and the `vwap_position` factor were comparing price to a slow multi-day mean,
+  not the intraday VWAP. Now re-indexed by timestamp so it resets each day.
+- **Paper-fill key fix** (`execution/order_manager.py`): paper orders stored
+  `avgprice`, but `OrderTracker` reads `averageprice`/`filledshares` — so paper
+  fills reported 0. Aligned to the live `orderBook()` keys.
+- **Capital-floor circuit breaker** (`risk/circuit_breaker.py`, config
+  `risk.capital_floor_buffer_pct`): worst-case-aware soft gate that blocks a new
+  entry if realized + open worst-case loss would breach a % of the day's start
+  capital. Backward-compatible signatures; 6 new tests.
+- **EOD square-off now logs EXIT records** (`main.py`) — previously EOD/kill
+  closes never wrote an EXIT to `alerts.jsonl`, leaving ~91 entries "open" for
+  `tools/evaluate_pnl.py`.
+- **Hard live gate** (`main.py` + `trading.live_trading_authorized`): refuses to
+  start in `mode: live` unless explicitly authorized, and refuses live while
+  `data_collection_mode` is on.
+
+### Config set to the least-harmful RESEARCH profile (`config/settings.yaml`)
+- `early_cut_candles: 3 → 0` — the single most destructive setting (875 trades @
+  2% win, −₹21k on one run; cut trades at median −0.03R, 44% while still green).
+- `ema_exit: false` (new) — the discretionary EMA-flip exit capped winners.
+- `trail_atr_mult: 1.0 → 2.5` — 1-ATR trail stopped winners on normal pullbacks.
+- `min_confidence: 60 → 75` — cut overtrading (not a win-rate fix; score is weak).
+- `max_concurrent_positions: 10 → 3` — 10 was inconsistent with the 2% daily cap.
+- `atr_target_multiplier: 3.0 → 2.5` — marginally more reachable target.
+- `allow_position_rotation: true → false` — rotation lost in logs+backtest and
+  leans on the non-predictive confidence score.
+
+These make the *paper* research profile clean; **they do not make it profitable.**
+
+---
+
+## Research roadmap (the actual path to a tradeable system)
+
+Do these in order. Use `tools/run_portfolio_backtest.py` — a change is only
+"done" when it shows a positive profit factor across multiple quarters net of
+costs, not just on one window.
+
+### Phase A — ORB entry-quality experiments: TESTED, NO EDGE
+1. **Fakeout filters** (`require_orb_retest`, `confirmation_candles`,
+   `orb_range` band): swept. Best was `retest_range_conf80` — PF 0.67 on H1 2026,
+   but cross-quarter it was 0.56 / 1.09 / 0.53 / 0.29 (one lucky quarter, overfit
+   to the window). `confirm2` was stable but capped at ~0.6 PF, never > 1.0.
+2. **Shrink the universe**: the watchlist is large-caps first, so the 25–40
+   symbol runs already WERE the liquid subset; `top12_liquid_retest` was PF 0.43.
+   Shrinking did not create an edge.
+3. **Confidence score**: deferred. A score only helps rank trades *within* a
+   positive-edge signal; with no base edge yet, rebuilding it is premature.
+   (Already stopped relying on it: gate lowered, rotation disabled.)
+
+### Phase B — Alternative strategy — VWAP mean-reversion: TESTED, ALSO NO EDGE
+Built `strategy/vwap_reversion.py` (short when price is stretched > k·ATR above
+the session VWAP + overbought in a low-ADX/ranging regime; long mirror; target =
+reversion toward VWAP). Swept band (1.0/1.5/2.0 ATR), ADX cap, RSI extremity,
+stop width, and target fraction over 40 symbols, H1 2026:
+
+| variant                 | trades | win% | PF   |
+|-------------------------|-------:|-----:|-----:|
+| band 1.0                |   780  | 38.5 | 0.41 |
+| band 1.5                |   627  | 36.0 | 0.42 |
+| band 2.0                |   452  | 33.6 | 0.45 |
+| band1.5 + ADX≤20        |   383  | 33.4 | 0.34 |
+| band1.5 + RSI 30/70     |   302  | 34.4 | 0.43 |
+| band1.5 + wider stop    |   530  | 42.3 | 0.45 |
+| band1.5 + full-VWAP tgt |   605  | 34.5 | 0.46 |
+
+Every variant PF 0.26–0.46. Nothing cleared 1.0, so nothing was worth
+cross-quarter validation.
+
+### ⚠️ Synthesized finding: no simple technical edge at 15-min on this universe
+Trend-continuation (ORB) **and** its opposite, mean-reversion (VWAP), both lose
+on the same data. If breakouts don't continue and stretches don't revert, then
+at 15-min granularity on this ~300-name universe, price is effectively
+unpredictable **net of costs**. The tell is identical in every experiment:
+**avg-loss (₹65–79) > avg-win (₹45–60)** at ~35% win rate. The targeted moves
+are small 15-min swings, while a full 1-ATR stop + the fixed intraday round-trip
+cost eat the edge. **The timeframe is too short for move-size to beat cost drag.**
+
+### Phase C — Daily swing (positional): TESTED, regime-dependent, NO durable edge
+Built `strategy/swing.py` (`DailySwingStrategy`): Connors-style RSI(2) pullback in
+the direction of an SMA trend filter, ATR stop, signal-based exit. Added a
+delivery cost model (`zerodha_delivery_costs`) and a `swing_mode`/daily-timeframe
+path to the backtester (holds overnight, no square-off, resampled daily bars).
+
+Results were far *better-behaved* than intraday (win rate > 50%, small drawdown),
+and on a 60-name large-cap subset `rsi5_stop2` reached PF 0.87 — but:
+- On the **full ~290-name universe** it fell to PF ~0.4–0.5 (the faint edge was a
+  large-cap-subset effect, not universal).
+- The **half-year consistency split is damning**: `rsi5_stop2.5` was PF **0.14**
+  (win 32%) in Oct'25–Mar'26 and PF **1.12** (win 64%) in Apr'26–Sep'26.
+
+That split is the whole story: buy-the-dip is **long-biased market beta** — it
+prints money in a rising half-year and bleeds in a falling/choppy one. The H2
+profit is not a durable, regime-independent edge.
+
+### ⚠️ Overall conclusion after testing 3 strategy families
+| family (best config)              | verdict            | PF    |
+|-----------------------------------|--------------------|-------|
+| ORB breakout (intraday, 15m)      | negative all Qs    | ~0.44 |
+| VWAP mean-reversion (intraday)    | negative all params| 0.26–0.46 |
+| Daily swing RSI(2) (positional)   | regime-dependent   | 0.14 / 1.12 |
+
+No approach shows a **durable, regime-independent** edge on the available data.
+The daily swing is the most promising *shape*, but its profitability is pure
+market timing on a single favorable half-year.
+
+### The real blocker: DATA, not strategy ideas
+The cache is **one year** of 15-min data (~249 daily bars). That is a single
+market regime. Any daily/swing result — good or bad — is curve-fit to
+2025–2026 and cannot be trusted as an edge. Continuing to tune parameters on this
+one window is overfitting, not research.
+
+### Recommended path forward (requires a decision)
+1. **Get multi-year daily data (5–10 years) via `data/historical_fetcher.py`**
+   (Angel `getCandleData`, chunked) or another source, then properly validate the
+   daily swing strategy across bull/bear/sideways regimes. This is the ONLY path
+   with a real chance of confirming an edge.
+2. **Add a market-regime filter to the swing strategy** (e.g. only take longs when
+   the index / equal-weight universe is above its 200-day MA). This directly
+   attacks the H1-type bloodbath — but must be validated on multi-year data, not
+   this one year. `risk/market_regime.py` already exists as a starting point.
+3. **Otherwise, keep the system notification-only** (its original design). Do not
+   auto-execute — no strategy here has earned it.
+
+Exhausted / not worth more effort on the current data: 15-min ORB and VWAP filter
+tuning, and rebuilding the confidence score.
+
+### Phase C — Only if Phase A or B yields PF > ~1.3 across quarters
+1. Forward paper-trade the winning config 3–4 weeks; confirm live behavior
+   matches backtest (fills, costs, circuit-breaker trips).
+2. Angel One / SEBI compliance check (static-IP whitelisting, algo-ID order
+   tagging) — verify directly with the broker; wire the tag into
+   `execution/order_manager.py` `params` if required.
+3. Flip `live_trading_authorized: true`, `mode: live`, `data_collection_mode:
+   false`, start at ₹25k / 0.5% risk / 2 concurrent, scale only on stable P&L.
+
+---
+
+## How to reproduce the backtest
+```bash
+# Baseline (current config) + the exit/target/confidence A/B matrix:
+python -m tools.run_portfolio_backtest --experiments --symbols 25 --start 2026-06-01
+
+# Full config over the current settings.yaml on the whole cache:
+python -m tools.run_portfolio_backtest --symbols 40
+```
+Outputs per-config trades / win% / profit factor / expectancy / return / maxDD
+and an exit-reason + long/short breakdown.
+
+## Key files
+- `backtest/portfolio.py` — portfolio backtester (the source of truth now)
+- `tools/run_portfolio_backtest.py` — runner + experiment matrix
+- `backtest/engine.py` — legacy single-symbol engine (kept; regression-tested)
+- `strategy/signal_engine.py` — strategy (VWAP fix, `ema_exit` toggle)
+- `risk/circuit_breaker.py` — capital-floor guard
+- `config/settings.yaml` — research profile + `live_trading_authorized` gate
 
 ## Decisions
-- Rollout order: paper-mode validation first, then live money
-- Diversification/sector-cap logic: dropped from scope per user request — not part of this plan
-- Capital: "never end day below start" treated as best-effort capital-floor breaker, not a guarantee
-- Compliance section included per request; exact SEBI/Angel One process needs direct broker verification
-- Capital/risk finalized per AI recommendation: ₹25,000 start, 0.5%→1.0% risk ramp, 1.0%→2.0% daily-loss ramp
-- Capital allocation: risk-based sizing kept as-is (no equal-parts capital split); concurrency capped at 2 during the pilot to keep worst-case daily loss consistent with the 1.0% cap
+- Live trading is hard-gated off until a positive backtested edge exists.
+- Backtesting is now portfolio-level and offline (cached data), not single-symbol.
+- Exit management is no longer the bottleneck; the entry signal is. Research
+  effort goes to entry quality / a mean-reversion alternative, not exit tuning.

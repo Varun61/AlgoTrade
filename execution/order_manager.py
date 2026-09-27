@@ -172,7 +172,13 @@ class OrderManager:
             "ordertype"      : order_type,
             "status"         : "complete",    # Paper: instantly filled
             "client_ref"     : client_ref,
-            "avgprice"       : price,
+            # Use the SAME key names SmartAPI's live orderBook() returns, so
+            # OrderTracker._reconcile() (which reads averageprice/filledshares)
+            # works identically in paper and live. Previously this stored
+            # "avgprice", which the tracker never reads → paper fills reported 0.
+            "averageprice"   : price,
+            "filledshares"   : qty,
+            "text"           : "",
         }
         self._paper_orders.append(order)
         self._pending[client_ref] = order_id

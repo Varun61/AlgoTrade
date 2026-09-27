@@ -158,5 +158,15 @@ class StrategyBase(ABC):
         """
         return None
 
+    def set_market_regime(self, regime: int) -> None:
+        """
+        Optional hook: the orchestrator/backtester supplies the broad-market
+        regime for the current session — +1 (uptrend), -1 (downtrend/chop), 0
+        (unknown). Regime-aware strategies use it to switch behavior (e.g.
+        momentum-continuation in uptrends, mean-reversion/fade otherwise).
+        Default: no-op (regime-agnostic strategies).
+        """
+        pass
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(symbol={self.symbol})"
