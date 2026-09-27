@@ -26,7 +26,8 @@ cd /path/to/AlgoTrade && source .venv/bin/activate && python -m tools.options_da
 It does everything itself (collect real option data → open the weekly paper
 condor at real prices → settle at expiry → print running P&L). **No live orders.**
 Idempotent — safe to run repeatedly. Schedule via `scheduler/options_runner.sh`
-at **15:35 IST / 10:05 UTC, Mon–Fri** (NOT pre-market — prices would be stale).
+at **15:50 IST / 10:20 UTC, Mon–Fri** — after the 3:40 PM F&O close (CAS regime
+since 03-Aug-2026; NOT pre-market, and NOT 3:35 while options are still trading).
 
 - Paper trades log: `logs/options_paper.jsonl`
 - Check summary: `python -m tools.run_options_paper --action status`

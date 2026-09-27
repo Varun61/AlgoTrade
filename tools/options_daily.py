@@ -117,7 +117,9 @@ def main() -> None:
             # a stale/pre-market spot and book a wrong P&L).
             if exp_ts.date() > now.date():
                 continue
-            if exp_ts.date() == now.date() and now.time() < datetime.strptime("15:25", "%H:%M").time():
+            # F&O now trades until 3:40 PM (CAS regime, effective 03-Aug-2026),
+            # so only settle after the derivatives close.
+            if exp_ts.date() == now.date() and now.time() < datetime.strptime("15:40", "%H:%M").time():
                 continue
             s = r["strikes"]
             legs = CondorLegs(s["short_ce"], s["short_pe"], s["long_ce"], s["long_pe"])
