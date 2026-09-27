@@ -5,13 +5,14 @@
 # (collect real data + open the weekly condor + settle expired ones + print P&L).
 # Idempotent and safe to run daily. NO live orders are placed.
 #
-# IMPORTANT — schedule this AFTER market close, ~15:35 IST (NOT in the morning:
-# before the open, option prices are stale and expiry-day settlement would be
-# wrong). Weekdays only.
+# IMPORTANT — schedule this AFTER the derivatives close. Since 03-Aug-2026
+# (CAS regime) NSE F&O trades until 3:40 PM (cash CAS auction runs 3:15-3:35),
+# so run at ~15:50 IST to capture final settled prices. NOT in the morning
+# (prices stale) and NOT at 3:35 (options still trading). Weekdays only.
 #
 # Cron (server in IST):
-#   35 15 * * 1-5 /path/to/AlgoTrade/scheduler/options_runner.sh >> /path/to/AlgoTrade/logs/cron_options.log 2>&1
-# (If your server is on UTC: 15:35 IST = 10:05 UTC ->  5 10 * * 1-5 ...)
+#   50 15 * * 1-5 /path/to/AlgoTrade/scheduler/options_runner.sh >> /path/to/AlgoTrade/logs/cron_options.log 2>&1
+# (If your server is on UTC: 15:50 IST = 10:20 UTC ->  20 10 * * 1-5 ...)
 
 set -euo pipefail
 
