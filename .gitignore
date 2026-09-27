@@ -15,3 +15,7 @@ data/instrument_master_*.json
 # Ad-hoc trade log pulls (contain secrets, e.g. Telegram token in logs)
 *_Trade_logs/
 .DS_Store
+
+# Catch mistyped/other dated log-pull folders (e.g. *_Tarde_logs)
+*_Tarde_logs/
+*_logs/
