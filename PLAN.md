@@ -729,3 +729,32 @@ to backtest reliably on daily data (far-leg pricing is the crux and is illiquid)
   directional credit spreads) -> no durable edge, slippage-fragile
 - stock options (monthly, 6 liquid names) -> every one loses vs index
 The weekly VIX-timed iron condor is the singular durable edge. Search converged.
+
+---
+## BankNifty / Sensex tested — not a gap-filler, not better than NIFTY
+
+Q: VIX-time BankNifty/Sensex? Trade BankNifty on NIFTY's skipped weeks?
+
+Facts (confirmed with real bhavcopy expiry data):
+- India VIX is derived from NIFTY only — no native BankNifty/Sensex VIX. Any VIX
+  timing on them uses India VIX as an imperfect proxy.
+- BankNifty WEEKLY options were DISCONTINUED (~Nov 2024). 2025-2026 data shows
+  MONTHLY-only expiries. So there is NO weekly BankNifty to trade -> it cannot
+  fill NIFTY's skipped weeks. (And skipped weeks are market-wide low-vol, so
+  BankNifty premium is thin then too — selling it then = the losing sell-every-week
+  behaviour.)
+- Sensex is a BSE product (separate data pipeline) and ~99% correlated to NIFTY —
+  a Sensex condor is essentially a NIFTY duplicate, no diversification, no own VIX.
+
+Fetched BANKNIFTY (tools/fetch_nse_stock_opt.py --instr IDO) and ran a MONTHLY
+condor (backtest/options_monthly_bt.py, strike_step=100) vs NIFTY monthly, SAME
+window 2024-07..2026-09:
+  NIFTY 5%/3%:      PF 2.94 sharpe 1.19 worst -37.5k
+  BANKNIFTY 5%/3%:  PF 1.90 sharpe 0.79 worst -58.6k
+  BANKNIFTY 6%/3%:  PF 2.80 sharpe 1.18 worst -60.2k
+BankNifty monthly condor IS viable but NOT better than NIFTY risk-adjusted:
+comparable PF, but ~1.6x bigger worst-trade losses (BankNifty is more volatile).
+Caveats: only ~2yr of data (favorable calm regime; no 2022-style stress), and
+~90% correlated to NIFTY (limited diversification). VERDICT: not worth adding —
+can't gap-fill (monthly only), adds tail risk, correlated, optimistic sample.
+The NIFTY weekly VIX-timed condor remains the single recommended strategy.

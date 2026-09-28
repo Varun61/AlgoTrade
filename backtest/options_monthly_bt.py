@@ -69,7 +69,7 @@ def _leg(day, expiry, strike, is_call):
 
 def run_monthly_condor(cache_dir: str, lot_size: int, short_pct=5.0, wing_pct=3.0,
                        min_dte=18, max_dte=45, cost_per_leg=20.0, slip_pts_per_leg=1.0,
-                       start=None, end=None) -> MonthlyResult:
+                       start=None, end=None, strike_step=None) -> MonthlyResult:
     d = Path(cache_dir)
     files = sorted(d.glob("*.csv"))
     dates = [datetime.strptime(f.stem, "%Y-%m-%d").date() for f in files]
@@ -89,7 +89,7 @@ def run_monthly_condor(cache_dir: str, lot_size: int, short_pct=5.0, wing_pct=3.
         if spotcol.empty:
             continue
         spot = float(spotcol.iloc[0])
-        step = _step_for(spot)
+        step = strike_step or _step_for(spot)
 
         if pos is not None and dt >= pos["expiry"]:
             S = spot; p = pos
