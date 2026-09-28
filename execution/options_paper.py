@@ -123,15 +123,19 @@ class PaperCondorBook:
         with open(self.path, "a") as f:
             f.write(json.dumps(rec, default=str) + "\n")
 
-    def open_condor(self, expiry: str, legs: CondorLegs, premiums: dict, spot: float) -> float:
+    def open_condor(self, expiry: str, legs: CondorLegs, premiums: dict, spot: float,
+                    meta: dict | None = None) -> float:
         credit = entry_credit(premiums)
-        self._write({
+        rec = {
             "event": "OPEN", "expiry": expiry, "spot": spot,
             "strikes": {"short_ce": legs.short_ce_strike, "short_pe": legs.short_pe_strike,
                         "long_ce": legs.long_ce_strike, "long_pe": legs.long_pe_strike},
             "premiums": premiums, "credit_pts": round(credit, 2),
             "symbols": legs.symbols,
-        })
+        }
+        if meta:                      # diagnostic columns: vix, vix_pctile, iv_rv, ret5, ...
+            rec.update(meta)
+        self._write(rec)
         logger.info(f"[PaperCondor] OPEN {expiry} credit={credit:.1f}pts spot={spot:.0f}")
         return credit
 

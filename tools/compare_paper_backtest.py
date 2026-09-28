@@ -91,8 +91,10 @@ def _report(name: str, log_path: Path):
 
 def main():
     print("PAPER vs BACKTEST — out-of-sample validation")
+    print("A/B/C: weekly (fixed) | weekly_em (expected-move) | weekly_postmove (>=2% prior move)")
     _report("weekly", _LOG_DIR / "options_paper.jsonl")
     _report("weekly_em", _LOG_DIR / "options_paper_em.jsonl")
+    _report("weekly_postmove", _LOG_DIR / "options_paper_postmove.jsonl")
     print("\nNote: needs several settled weeks to be meaningful (profit is lumpy — "
           "75% of it comes from ~10% of weeks). Judge over a full cycle, not 2-3 trades.")
 

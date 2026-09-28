@@ -884,3 +884,30 @@ DISCIPLINE: found 4 in-sample improvements (EM, IV/RV, wider wings, post-move).
 Each is a DoF. Refuse to stack them into an overfit monster. Live candidates stay
 just two: weekly (minimal) + weekly_em (one refinement). Decide by OOS paper, not
 more backtest tuning. (post-move could be added as an optional 3rd paper variant.)
+
+---
+## RESEARCH FREEZE 🔒 — 3 paper variants, decided by out-of-sample only
+
+Tail analysis (tools/analyze_tail.py) confirmed: the condor's entire tail comes
+from >2% weekly moves (EM: <1% PF inf, 1-2% PF 53, >2% PF 0.51). And these
+dangerous weeks are NOT cleanly predictable at entry — entry VIX percentile only
+mildly separates them (safe ~77 vs danger ~87, heavy overlap), IV/RV/ret5 barely
+differ. So the tail is largely IRREDUCIBLE; the wide fixed IC survives big moves
+rather than predicting them. That is why fixed 3/2 stays the control.
+
+THREE frozen paper variants now run in parallel (tools/options_daily.py), each to
+its own log, with full diagnostic columns (vix, vix_pctile, iv_rv, prev_5d_return,
+strikes, credit, settlement, P&L):
+| variant           | hypothesis                              | backtest (5yr) |
+|-------------------|-----------------------------------------|----------------|
+| A weekly          | original robust fixed 3/2 (control)     | PF 1.87        |
+| B weekly_em       | expected-move (~1 SD) strikes + IV/RV   | PF 2.62        |
+| C weekly_postmove | fixed 3/2 only after >=2% prior-wk move | PF 2.96        |
+
+RULES ARE FROZEN. Do NOT tune (the 2% cutoff, the 55 VIX gate, the 1.1 IV/RV, the
+EM mult were all found in-sample — each a degree of freedom). Do NOT add a 4th
+variant. Do NOT let paper results re-tune the rules (that reintroduces the
+optimization loop). The paper-vs-backtest validator (tools/compare_paper_backtest.py)
+is now the key infrastructure: after a full cycle of live paper fills, compare
+A/B/C to their backtests and let the MARKET decide which (if any) survives — B/C
+are observation-only and may NOT be promoted to real money on backtest alone.

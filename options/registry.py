@@ -63,6 +63,12 @@ EM_SHORT_MULT = 1.0           # short strikes at 1.0 x weekly expected move
 EM_WING_MULT = 1.0            # wings 1.0 x EM further out
 EM_IVRV_MIN = 1.1             # extra gate: only when VIX/realized-vol >= this
 
+# ---- Post-move variant (variant C — FROZEN, observe-only) ----
+# Fixed 3/2 condor entered ONLY after a >=2% prior 5-session move (mean-reversion).
+# The 2% cutoff was discovered in-sample => treat as observation, never promote
+# without out-of-sample proof. RULES ARE FROZEN — do not tune the 2%.
+EM_POSTMOVE_RET5_MIN = 2.0
+
 
 @dataclass
 class Component:
@@ -165,6 +171,32 @@ def build_weekly_em(start=None, end=None) -> OptionsStrategy:
     )
 
 
+def _weekly_postmove_component(start=None, end=None, vix_min=WEEKLY_VIX_MIN_PCTL,
+                               ret5_min=EM_POSTMOVE_RET5_MIN,
+                               short_pct=WEEKLY_SHORT_PCT, wing_pct=WEEKLY_WING_PCT) -> Component:
+    def router(spot, reg):
+        if reg.vix_pct >= vix_min and abs(reg.ret5) >= ret5_min:
+            return ("postmove", iron_condor(spot, short_pct, wing_pct))
+        return None
+    r = _weekly_bt(router, start=start, end=end)
+    ser = pd.Series({pd.Timestamp(x["expiry"]): x["pnl_rs"]
+                     for x in r.weeks if x["strat"] != "flat"}).sort_index()
+    margin = _p90([x["margin_rs"] for x in r.weeks if x["strat"] != "flat"], 37000)
+    return Component("weekly_postmove", ser, margin)
+
+
+def build_weekly_postmove(start=None, end=None) -> OptionsStrategy:
+    return OptionsStrategy(
+        name="weekly_postmove", kind="weekly", min_capital=110_000,
+        description="EXPERIMENTAL: fixed 3/2 condor, entered only after a >=2% prior "
+                    "5-session move (mean-reversion hypothesis).",
+        warning="EXPERIMENTAL — the 2% cutoff was found in-sample (2 degrees of "
+                "freedom). Fixes 2022/2023 in backtest but new weak 2025. FROZEN "
+                "rules; observe on paper only, do NOT promote.",
+        components=[_weekly_postmove_component(start, end)],
+    )
+
+
 def build_daily(start=None, end=None) -> OptionsStrategy:
     return OptionsStrategy(
         name="daily", kind="daily", min_capital=80_000,  # worst day ~₹19k / 0.25
@@ -189,6 +221,7 @@ def build_hybrid(start=None, end=None) -> OptionsStrategy:
 REGISTRY: dict[str, Callable[..., OptionsStrategy]] = {
     "weekly": build_weekly,
     "weekly_em": build_weekly_em,
+    "weekly_postmove": build_weekly_postmove,
     "daily": build_daily,
     "hybrid": build_hybrid,
 }

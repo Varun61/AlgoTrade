@@ -31,7 +31,7 @@ import pandas as pd
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
 from options.registry import (WEEKLY_SHORT_PCT, WEEKLY_WING_PCT, WEEKLY_VIX_MIN_PCTL,
-                              EM_SHORT_MULT, EM_WING_MULT, EM_IVRV_MIN)
+                              EM_SHORT_MULT, EM_WING_MULT, EM_IVRV_MIN, EM_POSTMOVE_RET5_MIN)
 from options.vix_filter import vix_percentile
 
 STRIKES_EACH_SIDE = 12
@@ -60,7 +60,7 @@ def _price_legs(R, obj, nopt, exp, legs):
     return prem, True
 
 
-def _open_variant(name, book, R, obj, nopt, exp, exp_str, legs, gate_ok, gate_msg):
+def _open_variant(name, book, R, obj, nopt, exp, exp_str, legs, gate_ok, gate_msg, spot, meta):
     if exp_str in R._open_expiries(book.path):
         print(f"  [{name}] already open for {exp_str}"); return
     if not gate_ok:
@@ -68,7 +68,7 @@ def _open_variant(name, book, R, obj, nopt, exp, exp_str, legs, gate_ok, gate_ms
     prem, ok = _price_legs(R, obj, nopt, exp, legs)
     if not ok:
         return
-    credit = book.open_condor(exp_str, legs, prem, R._ltp(obj, "NSE", "Nifty 50", R.NIFTY_SPOT_TOKEN))
+    credit = book.open_condor(exp_str, legs, prem, spot, meta={**meta, "variant": name})
     print(f"  [{name}] OPENED {exp_str}: credit {credit:.1f} pts | "
           f"sell {legs.short_pe_strike:.0f}P/{legs.short_ce_strike:.0f}C, "
           f"wings {legs.long_pe_strike:.0f}/{legs.long_ce_strike:.0f}")
@@ -117,6 +117,7 @@ def main() -> None:
     sm = SessionManager(); obj = sm.login()
     book_fixed = PaperCondorBook(path=_LOG_DIR / "options_paper.jsonl", lot_size=R.LOT_SIZE)
     book_em = PaperCondorBook(path=_LOG_DIR / "options_paper_em.jsonl", lot_size=R.LOT_SIZE)
+    book_pm = PaperCondorBook(path=_LOG_DIR / "options_paper_postmove.jsonl", lot_size=R.LOT_SIZE)
     try:
         master = download_instrument_master()
         fetcher = HistoricalFetcher(obj)
@@ -132,7 +133,10 @@ def main() -> None:
         vpct = vix_percentile(vseries)
         nifty_closes = R.update_and_get_nifty(obj, spot)
         iv_rv = R.compute_iv_rv(vix_latest, nifty_closes) if vix_latest else 1.0
-        print(f"  signals: spot={spot} VIX={vix_latest} VIX%ile={vpct} IV/RV={iv_rv:.2f}")
+        ret5 = ((nifty_closes[-1] / nifty_closes[-6] - 1) * 100) if len(nifty_closes) >= 6 else 0.0
+        meta = {"vix": vix_latest, "vix_pctile": vpct, "iv_rv": round(iv_rv, 3),
+                "prev_5d_return": round(ret5, 2)}
+        print(f"  signals: spot={spot} VIX={vix_latest} VIX%ile={vpct} IV/RV={iv_rv:.2f} prev5d={ret5:.2f}%")
 
         # 1) COLLECT real option data around ATM
         _hr("1. Collecting real option data")
@@ -153,27 +157,36 @@ def main() -> None:
         except Exception as e:
             print(f"  (collection skipped: {e})")
 
-        # 2) OPEN each variant if its gate passes
+        # 2) OPEN each variant if its gate passes  (A=fixed, B=expected-move, C=post-move)
         _hr("2. Opening paper condors (if gates pass)")
         vix_ok = vpct is not None and vpct >= WEEKLY_VIX_MIN_PCTL
+        # A — fixed 3/2, VIX gate
         _open_variant("weekly", book_fixed, R, obj, nopt, exp, exp_str,
                       build_condor_strikes(spot, WEEKLY_SHORT_PCT, WEEKLY_WING_PCT),
-                      vix_ok, f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}")
+                      vix_ok, f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}", spot, meta)
+        # B — expected-move strikes, VIX + IV/RV gate
         em_ok = vix_ok and iv_rv >= EM_IVRV_MIN
         em_msg = f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}" if not vix_ok else f"IV/RV {iv_rv:.2f} < {EM_IVRV_MIN}"
         if vix_latest:
             _open_variant("weekly_em", book_em, R, obj, nopt, exp, exp_str,
                           build_em_condor_strikes(spot, vix_latest, EM_SHORT_MULT, EM_WING_MULT),
-                          em_ok, em_msg)
+                          em_ok, em_msg, spot, meta)
+        # C — post-move: fixed 3/2, VIX gate + prior-week |move| >= 2% (FROZEN rules)
+        pm_ok = vix_ok and abs(ret5) >= EM_POSTMOVE_RET5_MIN
+        pm_msg = f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}" if not vix_ok else f"prev5d {ret5:.1f}% < {EM_POSTMOVE_RET5_MIN}% (no big prior move)"
+        _open_variant("weekly_postmove", book_pm, R, obj, nopt, exp, exp_str,
+                      build_condor_strikes(spot, WEEKLY_SHORT_PCT, WEEKLY_WING_PCT),
+                      pm_ok, pm_msg, spot, meta)
 
-        # 3) SETTLE expired condors for both variants
+        # 3) SETTLE expired condors for all variants
         _hr("3. Settling expired condors")
         _settle_variant("weekly", book_fixed, spot, CondorLegs)
         _settle_variant("weekly_em", book_em, spot, CondorLegs)
+        _settle_variant("weekly_postmove", book_pm, spot, CondorLegs)
 
         # 4) STATUS
         _hr("4. Paper P&L so far")
-        for name, bk in [("weekly", book_fixed), ("weekly_em", book_em)]:
+        for name, bk in [("weekly", book_fixed), ("weekly_em", book_em), ("weekly_postmove", book_pm)]:
             s = bk.summary()
             print(f"  {name:<10} trades={s['trades']}  total=₹{s['total_pnl_rs']:,.0f}  "
                   f"win%={s['win_rate']}  avg=₹{s.get('avg_rs',0):,.0f}")
