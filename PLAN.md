@@ -857,3 +857,30 @@ wings, IV/RV, ...). Each is a degree of freedom = overfitting risk. Deliberately
 NOT stacking more. Baseline weekly (fixed 3/2, minimal DoF, 5/6 yrs) + one
 principled refinement weekly_em (EM+IV/RV) run in PARALLEL on paper. Decision by
 out-of-sample validation, not more optimization.
+
+---
+## COMPLETE 10-item experiment scorecard (all tested)
+
+| # | experiment              | verdict | detail |
+|---|-------------------------|---------|--------|
+| 1 | capital/leverage        | no edge | 1.25/1.5/2x -> identical PF 1.87 & ret/DD 3.32 (pure leverage) |
+| 2 | IC width grid           | done    | 3/5 best fixed; EM (vol-adaptive) beats it |
+| 3 | expected-move strikes   | ✅ win  | weekly_em (~21%/yr PF 2.62) |
+| 4 | IV vs realized vol      | ✅ win  | combined gate in weekly_em |
+| 5 | range/trend filter      | interesting | FAR-from-20DMA (>=2%) PF 3.11 vs NEAR PF 1.14 — condor better when EXTENDED, not rangey. In-sample; 4/6 yrs |
+| 6 | entry timing (intraday) | untestable | only daily OHLC |
+| 7 | post-move entry         | interesting | prior-wk |ret5|>=2% -> PF 2.96, FIXES 2022+2023 but cuts trades 58% & total (75k vs 91k), new weak 2025. In-sample |
+| 8 | dynamic wings           | done    | wider 1.5xEM better in-sample (PF 2.91) — not adopting (DoF) |
+| 9 | re-centering/adjust     | done    | =stops; hurt (whipsaw) |
+| 10| scale after live proof  | agreed  | the plan; leverage table (#1) supports linear scaling |
+
+KEY THEME: #5 and #7 agree — the condor's edge is strongest AFTER a big move /
+when the market is EXTENDED (rich premium + mean-reversion), weakest when calm and
+on its average. Economically coherent, and fixes the historically-weak 2022/2023.
+BUT: in-sample, cuts trade count ~58%, lowers total, shifts the weak year to 2025,
+and is ANOTHER degree of freedom. Candidate to VALIDATE on paper, NOT to adopt now.
+
+DISCIPLINE: found 4 in-sample improvements (EM, IV/RV, wider wings, post-move).
+Each is a DoF. Refuse to stack them into an overfit monster. Live candidates stay
+just two: weekly (minimal) + weekly_em (one refinement). Decide by OOS paper, not
+more backtest tuning. (post-move could be added as an optional 3rd paper variant.)

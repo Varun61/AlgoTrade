@@ -185,6 +185,7 @@ def _load_index():
     df["sma20"] = df["nifty"].rolling(20).mean()
     df["mom10"] = df["nifty"].pct_change(10)
     df["ret"] = df["nifty"].pct_change()
+    df["ret5"] = df["nifty"].pct_change(5) * 100        # prior-week move %
     df["rv10"] = df["ret"].rolling(10).std() * np.sqrt(252) * 100  # annualized %
     df["vix_pct60"] = df["vix"].rolling(60).apply(
         lambda w: (w.rank(pct=True).iloc[-1]) * 100, raw=False)
@@ -200,6 +201,9 @@ class Regime:
     trend: str  # up/down/flat
     rv10: float = 0.0       # realized vol (10d, annualized %)
     iv_rv: float = 1.0      # VIX / realized-vol ratio (volatility-risk-premium richness)
+    dist_sma20: float = 0.0 # % distance of price from its 20-day SMA (range vs trend)
+    mom10: float = 0.0      # 10-day momentum (fraction)
+    ret5: float = 0.0       # prior-week (5d) return %
 
 
 def classify(idx_row) -> Regime:
@@ -208,6 +212,9 @@ def classify(idx_row) -> Regime:
     rv = float(idx_row["rv10"]) if not np.isnan(idx_row["rv10"]) else 0.0
     iv_rv = (vix / rv) if rv > 0 else 1.0
     close, sma, mom = idx_row["nifty"], idx_row["sma20"], idx_row["mom10"]
+    dist_sma = ((close - sma) / sma * 100) if not np.isnan(sma) and sma else 0.0
+    ret5 = float(idx_row["ret5"]) if not np.isnan(idx_row["ret5"]) else 0.0
+    mom_v = float(mom) if not np.isnan(mom) else 0.0
     trend = "flat"
     if not np.isnan(sma):
         if close > sma and mom > 0.01:
@@ -223,7 +230,7 @@ def classify(idx_row) -> Regime:
         label = "trend_down"
     else:
         label = "calm"
-    return Regime(label, vix, vpct, trend, rv, iv_rv)
+    return Regime(label, vix, vpct, trend, rv, iv_rv, dist_sma, mom_v, ret5)
 
 
 # ----------------------------- backtester ----------------------------------
