@@ -527,3 +527,51 @@ Live trading stays hard-gated until (a) live multi-leg order code exists and
 python -m backtest.options_intraday_bt      # 0DTE same-day table
 python -m tools.run_options_multi           # weekly structures + VIX timing
 ```
+
+---
+## FINAL: Daily (0DTE) vs Weekly — profit by capital tier (no stop-loss)
+
+`tools/capital_sizing.py` — sizing rule: worst historical event <=35% of capital
+AND margin <=75%. Per-lot from real-data backtests (~2.15 yr). NIFTY lot 75.
+
+DAILY — 0DTE iron-fly ATM, VIX>=40, ~2pt/leg slippage (PF 1.37, Sharpe 2.13,
+margin ₹11.6k/lot, worst event ₹14.4k, maxDD ₹19.1k, ~27 trades/yr):
+| capital | lots | profit/yr | return% | worst DD | DD% |
+|---------|------|-----------|---------|----------|-----|
+| 25,000  | 0    | too small (1 lot = all-in, ~58% risk) | | | |
+| 50,000  | 1    | 23,026    | 46%     | -19,142  | 38% |
+| 100,000 | 2    | 46,051    | 46%     | -38,284  | 38% |
+| 200,000 | 4    | 92,103    | 46%     | -76,568  | 38% |
+| 500,000 | 12   | 276,308   | 55%     | -229,704 | 46% |
+
+WEEKLY — VIX-timed condor 3%/2%, hold to expiry (PF 3.13, Sharpe 2.10,
+margin ₹37k/lot, worst event ₹26.8k, maxDD ₹26.8k, ~27 trades/yr):
+| capital | lots | profit/yr | return% | worst DD | DD% |
+|---------|------|-----------|---------|----------|-----|
+| 25,000  | 0    | impossible (margin ₹37k > capital) | | | |
+| 50,000  | 0    | too small | | | |
+| 100,000 | 1    | 34,121    | 34%     | -26,759  | 27% |
+| 200,000 | 2    | 68,242    | 34%     | -53,518  | 27% |
+| 500,000 | 6    | 204,725   | 41%     | -160,554 | 32% |
+
+### Verdict for real money
+- DAILY wins on RETURN % (~46% vs ~34%) — it's capital-light (₹11.6k/lot), so
+  more lots per rupee, and it works from ₹50k. BUT its edge is THIN (PF 1.37) and
+  execution-sensitive: it needs ~2pt/leg fills; at ~5pt it stops working. Real risk.
+- WEEKLY wins on SAFETY: PF 3.13 (makes ~3x what it loses), execution-tolerant
+  (enter, hold to expiry, no intraday fills), but needs ~₹100k for one safe lot.
+- Both are DEFINED-RISK (max loss = wing width) so even a crash week is capped —
+  the key protection given the sample has no crash.
+- ₹25k: only the 0DTE is even openable (1 lot, but that's all-in ~58-77% tail).
+  Not recommended for real money at ₹25k.
+
+RECOMMENDED: if capital >= ~₹1L, run the WEEKLY VIX-timed condor (best risk-
+adjusted, high PF, execution-tolerant). Use/add the DAILY 0DTE only after paper
+trading confirms your real fills are ~2pt/leg. For ₹50k-1L the 0DTE is the only
+participant but treat it as higher-risk. Everything stays paper-gated until live
+multi-leg order code + a forward paper run confirm the fills.
+
+### Reproduce
+```bash
+python -m tools.capital_sizing
+```
