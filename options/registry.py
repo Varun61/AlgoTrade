@@ -44,6 +44,16 @@ from backtest.options_intraday_bt import run_intraday as _intraday_bt
 
 LOT_SIZE = 75
 
+# ---- Weekly condor parameters — THE SINGLE SOURCE OF TRUTH ----
+# The durable, validated edge (5yr real data): sell a 3%-OTM iron condor with 2%
+# wings, held to weekly expiry, ONLY when India VIX is in the upper part of its
+# 60-day range (rich premium). Both the backtest and the live/paper runner import
+# these so they can never drift apart.
+WEEKLY_SHORT_PCT = 3.0
+WEEKLY_WING_PCT = 2.0
+WEEKLY_VIX_MIN_PCTL = 55.0     # only sell when VIX 60-day percentile >= this
+VIX_PCTL_WINDOW = 60
+
 
 @dataclass
 class Component:
@@ -70,8 +80,8 @@ class OptionsStrategy:
 # ---------------------------------------------------------------------------
 # Component builders (run the real-data backtest, return a per-lot ₹ P&L series)
 # ---------------------------------------------------------------------------
-def _weekly_component(start=None, end=None, vix_min=55.0,
-                      short_pct=3.0, wing_pct=2.0) -> Component:
+def _weekly_component(start=None, end=None, vix_min=WEEKLY_VIX_MIN_PCTL,
+                      short_pct=WEEKLY_SHORT_PCT, wing_pct=WEEKLY_WING_PCT) -> Component:
     r = _weekly_bt(
         lambda spot, reg: (("condor", iron_condor(spot, short_pct, wing_pct))
                            if reg.vix_pct >= vix_min else None),

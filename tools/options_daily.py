@@ -3,12 +3,17 @@ tools/options_daily.py
 
 ONE command to run once a day. It does everything automatically:
   1. Collects today's real NIFTY option data.
-  2. Opens a paper iron-condor if none is open for the current expiry.
-  3. Settles any condor whose expiry has passed.
+  2. Checks the VIX gate and opens a paper iron-condor ONLY if India VIX is in the
+     upper part of its 60-day range (>=55th pctile). Otherwise it SITS OUT — this
+     selectivity is the actual edge (selling every week tested ~4x worse).
+  3. Settles any condor whose expiry has passed (held to expiry, no stops).
   4. Prints the running paper P&L summary.
 
-Everything is idempotent — safe to run any number of times per day. All defaults
-(strikes, wings) are baked in from the backtest, so there is nothing to configure.
+This runs the VALIDATED strategy from options/registry.py: a 3%-OTM iron condor
+with 2% wings, VIX-timed, lot 75. It is PAPER only — no live orders. Expect many
+"SKIP: VIX too low" days; that is correct behaviour, not a bug.
+
+Everything is idempotent — safe to run any number of times per day.
 
 Usage (that's the whole thing):
     python -m tools.options_daily
@@ -24,10 +29,12 @@ import pandas as pd
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
-# Baked-in config from the backtest (best risk-adjusted, positive every year).
-OFFSET_PCT = 2.0
-WING_PCT = 1.0
-STRIKES_EACH_SIDE = 8      # how many strikes around ATM to collect
+# Config imported from the SINGLE SOURCE OF TRUTH (options/registry.py) so the
+# paper/live run can never drift from the validated backtest.
+from options.registry import WEEKLY_SHORT_PCT, WEEKLY_WING_PCT
+OFFSET_PCT = WEEKLY_SHORT_PCT   # 3.0
+WING_PCT = WEEKLY_WING_PCT      # 2.0
+STRIKES_EACH_SIDE = 12     # how many strikes around ATM to collect (wider for 3%/2%)
 CANDLE_INTERVAL = 5
 
 
@@ -80,9 +87,15 @@ def main() -> None:
         _hr("2. Opening paper condor (if needed)")
         open_exp = R._open_expiries(book.path)
         exp = future[0]; exp_str = pd.Timestamp(exp).date().isoformat()
+        from options.vix_filter import should_sell
+        sell, pctl = should_sell(R.update_and_get_vix(obj))
         if exp_str in open_exp:
             print(f"  already open for expiry {exp_str} — nothing to do")
+        elif not sell:
+            print(f"  SKIP: India VIX 60d-percentile = {pctl} (< 55). Premium too thin —"
+                  f" sitting out this week. Sitting out cheap weeks IS the edge.")
         else:
+            print(f"  VIX gate OK: 60d-percentile = {pctl} (>= 55) — selling condor")
             legs = build_condor_strikes(spot, OFFSET_PCT, WING_PCT)
             prem, ok = {}, True
             for role, strike, opt in [("short_ce", legs.short_ce_strike, "CE"),

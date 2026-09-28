@@ -34,9 +34,12 @@ from execution.options_paper import (
     PaperCondorBook, build_condor_strikes, CondorLegs, entry_credit,
 )
 
+from options.registry import WEEKLY_SHORT_PCT, WEEKLY_WING_PCT, LOT_SIZE as _LOT
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 NIFTY_SPOT_TOKEN = "99926000"
-LOT_SIZE = 65
+INDIA_VIX_TOKEN = "99926017"   # Angel token for India VIX (NSE index)
+LOT_SIZE = _LOT                 # 75 (single source of truth: options/registry.py)
 
 
 def _nifty_options(master):
@@ -62,6 +65,31 @@ def _ltp(obj, exch, symbol, token):
     return None
 
 
+_VIX_CSV = Path(__file__).parent.parent / "data" / ".cache" / "index" / "vix_1d.csv"
+
+
+def update_and_get_vix(obj) -> list[float]:
+    """Append today's live India VIX to the cached daily series (dedup by date) so
+    the 60-day percentile stays current, and return the list of daily closes.
+    If the live fetch fails, returns whatever history is cached (may be stale)."""
+    closes = []
+    df = None
+    if _VIX_CSV.exists():
+        df = pd.read_csv(_VIX_CSV)
+        df["date"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None).dt.date
+    today = datetime.now().date()
+    live = _ltp(obj, "NSE", "India VIX", INDIA_VIX_TOKEN)
+    if live is not None and df is not None and today not in set(df["date"]):
+        new = pd.DataFrame([{"timestamp": pd.Timestamp(today), "close": live}])
+        df = pd.concat([df[["timestamp", "close"]], new], ignore_index=True)
+        df.to_csv(_VIX_CSV, index=False)
+    if df is not None:
+        closes = df.sort_values("timestamp")["close"].dropna().tolist()
+        if live is not None and (not closes or closes[-1] != live):
+            closes.append(live)
+    return closes
+
+
 def _open_expiries(book_path: Path) -> set:
     opened, settled = set(), set()
     if book_path.exists():
@@ -75,8 +103,8 @@ def _open_expiries(book_path: Path) -> set:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--action", choices=["open", "settle", "status"], default="status")
-    ap.add_argument("--offset-pct", type=float, default=2.0)
-    ap.add_argument("--wing-pct", type=float, default=1.0)
+    ap.add_argument("--offset-pct", type=float, default=WEEKLY_SHORT_PCT)
+    ap.add_argument("--wing-pct", type=float, default=WEEKLY_WING_PCT)
     args = ap.parse_args()
 
     book = PaperCondorBook(lot_size=LOT_SIZE)
@@ -101,6 +129,14 @@ def main() -> None:
             exp = future[0]; exp_str = pd.Timestamp(exp).date().isoformat()
             if exp_str in _open_expiries(book.path):
                 print(f"Expiry {exp_str} already open — skipping."); return
+            # VIX GATE — the edge is in only selling when premium is rich.
+            from options.vix_filter import should_sell
+            sell, pctl = should_sell(update_and_get_vix(obj))
+            if not sell:
+                print(f"SKIP: VIX 60d-percentile = {pctl} (< threshold). Premium too "
+                      f"thin — sitting out this week (this discipline IS the edge).")
+                return
+            print(f"VIX gate OK: 60d-percentile = {pctl}. Selling the condor.")
             legs = build_condor_strikes(spot, args.offset_pct, args.wing_pct)
             prem = {}
             for role, strike, opt in [("short_ce", legs.short_ce_strike, "CE"),
