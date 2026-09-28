@@ -758,3 +758,35 @@ Caveats: only ~2yr of data (favorable calm regime; no 2022-style stress), and
 ~90% correlated to NIFTY (limited diversification). VERDICT: not worth adding —
 can't gap-fill (monthly only), adds tail risk, correlated, optimistic sample.
 The NIFTY weekly VIX-timed condor remains the single recommended strategy.
+
+---
+## Robustness deep-dive on the IC (sensitivity / concentration / sizing / exits)
+
+Instead of chasing 15%->30%, stress-tested the EXISTING IC for robustness and
+"more return per unit of drawdown". Results (5yr, 3%/2% condor):
+
+### VIX threshold sensitivity (overfitting check) — PASSES
+| threshold | PF | Sharpe | ₹/yr |    | threshold | PF | Sharpe | ₹/yr |
+|-----------|----|--------|------|----|-----------|----|--------|------|
+| 45 | 1.88 | 1.18 | 19.5k |  | 60 | 1.74 | 1.10 | 14.5k |
+| 50 | 1.79 | 1.12 | 17.5k |  | 65 | 1.98 | 1.38 | 15.5k |
+| 55 | 1.87 | 1.23 | 17.1k |  | 70 | 1.77 | 1.15 | 12.2k |
+Smooth PLATEAU across 45-70 (PF 1.74-1.98). 55 is NOT a lonely spike => the edge
+is not overfit to a magic number. maxDD = -26,759 at every threshold (the one
+worst week is high-VIX, included by all) — the tail is structural.
+
+### Profit concentration — lumpy, take every trade
+Top 5 weeks = 44% of profit; top 10 = 75%; the other ~88 trades net ~flat/negative.
+Implication: cannot cherry-pick (unknown which weeks win in advance) — must take
+ALL qualifying trades; and judge only over a full sample, not a few weeks.
+
+### VIX-scaled sizing (0.75/1.0/1.25x) — no risk-adjusted gain
++10% return but +25% drawdown, PF 1.87->1.84. A wash; adds a fragile parameter. Skip.
+
+### Exits (TP/stop, tested earlier on 5yr) — hold-to-expiry stays best
+TP 50/60% ~ neutral (lower Sharpe); stops hurt (whipsaw). No change.
+
+CONCLUSION: the IC is already at its efficient point. Threshold-robust, execution-
+tolerant, PF 1.87, -27k maxDD, uncorrelated to market. No tweak (sizing, exits,
+complements, other underlyings, 0DTE, more structures) improves it risk-adjusted.
+Priority now: validate live/paper execution, NOT more backtest optimization.
