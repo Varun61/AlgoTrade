@@ -39,7 +39,7 @@ from typing import Callable
 
 import pandas as pd
 
-from backtest.options_multi_bt import backtest as _weekly_bt, iron_condor
+from backtest.options_multi_bt import backtest as _weekly_bt, iron_condor, em_condor
 from backtest.options_intraday_bt import run_intraday as _intraday_bt
 
 LOT_SIZE = 75
@@ -53,6 +53,15 @@ WEEKLY_SHORT_PCT = 3.0
 WEEKLY_WING_PCT = 2.0
 WEEKLY_VIX_MIN_PCTL = 55.0     # only sell when VIX 60-day percentile >= this
 VIX_PCTL_WINDOW = 60
+
+# ---- Expected-move variant (EXPERIMENTAL — under out-of-sample paper validation) ----
+# Strikes placed at ~1 implied standard-deviation instead of a fixed 3%. Backtest
+# showed higher return/Sharpe but a bigger tail and 4/6-yr robustness — NOT yet
+# proven out-of-sample, so it runs in PARALLEL with the fixed-3% baseline, not
+# instead of it.
+EM_SHORT_MULT = 1.0           # short strikes at 1.0 x weekly expected move
+EM_WING_MULT = 1.0            # wings 1.0 x EM further out
+EM_IVRV_MIN = 1.1             # extra gate: only when VIX/realized-vol >= this
 
 
 @dataclass
@@ -93,6 +102,20 @@ def _weekly_component(start=None, end=None, vix_min=WEEKLY_VIX_MIN_PCTL,
     return Component("weekly", ser, margin)
 
 
+def _weekly_em_component(start=None, end=None, vix_min=WEEKLY_VIX_MIN_PCTL,
+                         ivrv_min=EM_IVRV_MIN, short_mult=EM_SHORT_MULT,
+                         wing_mult=EM_WING_MULT) -> Component:
+    def router(spot, reg):
+        if reg.vix_pct >= vix_min and reg.iv_rv >= ivrv_min:
+            return ("em_condor", em_condor(spot, reg.vix, short_mult, wing_mult))
+        return None
+    r = _weekly_bt(router, start=start, end=end)
+    ser = pd.Series({pd.Timestamp(x["expiry"]): x["pnl_rs"]
+                     for x in r.weeks if x["strat"] != "flat"}).sort_index()
+    margin = _p90([x["margin_rs"] for x in r.weeks if x["strat"] != "flat"], 40000)
+    return Component("weekly_em", ser, margin)
+
+
 def _daily_component(start=None, end=None, vix_min=40.0,
                      wing_pct=1.0, slip=2.0) -> Component:
     r = _intraday_bt("straddle", use_wings=True, wing_pct=wing_pct,
@@ -130,6 +153,18 @@ def build_weekly(start=None, end=None) -> OptionsStrategy:
     )
 
 
+def build_weekly_em(start=None, end=None) -> OptionsStrategy:
+    return OptionsStrategy(
+        name="weekly_em", kind="weekly", min_capital=120_000,  # bigger tail than fixed
+        description="EXPERIMENTAL: expected-move (~1 SD) condor + IV/RV gate. Higher "
+                    "backtest return/Sharpe, but bigger tail; under paper validation.",
+        warning="EXPERIMENTAL — higher backtest return but bigger worst-week (~-40k) "
+                "and only 4/6-yr robustness. Run in PARALLEL with 'weekly' on paper; "
+                "do NOT switch real money until out-of-sample confirms it.",
+        components=[_weekly_em_component(start, end)],
+    )
+
+
 def build_daily(start=None, end=None) -> OptionsStrategy:
     return OptionsStrategy(
         name="daily", kind="daily", min_capital=80_000,  # worst day ~₹19k / 0.25
@@ -153,6 +188,7 @@ def build_hybrid(start=None, end=None) -> OptionsStrategy:
 # name -> builder(start, end) -> OptionsStrategy
 REGISTRY: dict[str, Callable[..., OptionsStrategy]] = {
     "weekly": build_weekly,
+    "weekly_em": build_weekly_em,
     "daily": build_daily,
     "hybrid": build_hybrid,
 }

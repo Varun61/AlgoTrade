@@ -93,6 +93,42 @@ def update_and_get_vix(obj) -> list[float]:
     return closes
 
 
+_NIFTY_CSV = Path(__file__).parent.parent / "data" / ".cache" / "index" / "nifty_1d.csv"
+
+
+def update_and_get_nifty(obj, spot: float | None = None) -> list[float]:
+    """Append today's NIFTY close to the cached daily series (dedup by date) and
+    return the list of daily closes — used to compute realized volatility."""
+    df = None
+    if _NIFTY_CSV.exists():
+        df = pd.read_csv(_NIFTY_CSV)
+        ts = pd.to_datetime(df["timestamp"], format="mixed", errors="coerce", utc=True)
+        df = df.assign(ts=ts.dt.tz_convert("Asia/Kolkata")).dropna(subset=["ts"]).sort_values("ts")
+    if spot is None:
+        spot = _ltp(obj, "NSE", "Nifty 50", NIFTY_SPOT_TOKEN)
+    today = pd.Timestamp(datetime.now().date(), tz="Asia/Kolkata")
+    if spot is not None and df is not None and today.date() not in set(df["ts"].dt.date):
+        new = pd.DataFrame([{"close": spot, "ts": today}])
+        df = pd.concat([df[["close", "ts"]], new], ignore_index=True).sort_values("ts")
+        out = df.copy(); out["timestamp"] = out["ts"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
+        out[["timestamp", "close"]].to_csv(_NIFTY_CSV, index=False)
+    closes = df["close"].dropna().tolist() if df is not None else []
+    if spot is not None and (not closes or closes[-1] != spot):
+        closes.append(spot)
+    return closes
+
+
+def compute_iv_rv(vix_latest: float, nifty_closes: list[float], days: int = 10) -> float:
+    """VIX / realized-vol ratio (realized = std of last `days` daily returns, annualized)."""
+    if len(nifty_closes) < days + 1:
+        return 1.0
+    import numpy as np
+    arr = np.array(nifty_closes[-(days + 1):], dtype=float)
+    rets = np.diff(arr) / arr[:-1]
+    rv = rets.std() * np.sqrt(252) * 100.0
+    return (vix_latest / rv) if rv > 0 else 1.0
+
+
 def _open_expiries(book_path: Path) -> set:
     opened, settled = set(), set()
     if book_path.exists():

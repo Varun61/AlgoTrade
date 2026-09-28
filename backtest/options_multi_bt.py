@@ -71,6 +71,24 @@ def iron_fly(spot, wing_pct):
             Leg(k, False, -1), Leg(k - W, False, +1)]
 
 
+def expected_move(spot, vix, days=7):
+    """1 expected move (points) over `days` calendar days from implied vol (VIX)."""
+    return spot * (vix / 100.0) * (days / 365.0) ** 0.5
+
+
+def em_condor(spot, vix, short_mult=1.0, wing_mult=1.0, days=7):
+    """Iron condor with strikes placed by EXPECTED MOVE (implied std-dev) instead of
+    a fixed %: shorts at short_mult x EM, wings wing_mult x EM further out.
+    Adapts strike distance to volatility (the economically-meaningful version of
+    'sell the range')."""
+    em = expected_move(spot, vix, days)
+    off = _r(short_mult * em) or _STEP
+    W = _r(wing_mult * em) or _STEP
+    kc, kp = _r(spot) + off, _r(spot) - off
+    return [Leg(kc, True, -1), Leg(kc + W, True, +1),
+            Leg(kp, False, -1), Leg(kp - W, False, +1)]
+
+
 def bull_put_spread(spot, short_off_pct, wing_pct):
     off = _r(spot * short_off_pct / 100) or _STEP
     W = _r(spot * wing_pct / 100) or _STEP

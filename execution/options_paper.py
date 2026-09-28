@@ -55,6 +55,27 @@ def build_condor_strikes(spot: float, offset_pct: float, wing_pct: float,
     )
 
 
+def build_em_condor_strikes(spot: float, vix: float, short_mult: float = 1.0,
+                            wing_mult: float = 1.0, days: int = 7,
+                            step: float = _STEP) -> CondorLegs:
+    """
+    EXPECTED-MOVE condor: strikes placed by implied std-dev instead of a fixed %.
+      1 expected move (points) = spot * (vix/100) * sqrt(days/365)
+      shorts at short_mult x EM; wings wing_mult x EM further out.
+    Mirrors build_condor_strikes but volatility-adaptive.
+    """
+    em = spot * (vix / 100.0) * (days / 365.0) ** 0.5
+    off = max(step, round_to_step(short_mult * em, step))
+    wing = max(step, round_to_step(wing_mult * em, step))
+    atm = round_to_step(spot, step)
+    short_ce = atm + off
+    short_pe = atm - off
+    return CondorLegs(
+        short_ce_strike=short_ce, short_pe_strike=short_pe,
+        long_ce_strike=short_ce + wing, long_pe_strike=short_pe - wing,
+    )
+
+
 def entry_credit(premiums: dict) -> float:
     """
     Net credit (points) = (short CE + short PE) - (long CE + long PE).
