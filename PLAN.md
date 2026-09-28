@@ -702,3 +702,30 @@ signals aren't predictive enough to overcome costs. This is consistent across
 selling near/far, buying directional/straddle, and directional credit spreads.
 The durable edge remains the WEEKLY VIX-timed condor (held to expiry, execution-
 tolerant). 0DTE is left as research only; not for real money.
+
+---
+## Calendar spreads tested (the last untested structural family) — also fail
+
+Built backtest/options_calendar_bt.py: sell near-week option, buy far-month same
+strike; short settles at intrinsic at near expiry, long valued at its real market
+price that day. DATA CAVEAT: monthly-ATM daily bhavcopy prints are frequently
+stale/erroneous (found a 15800CE marked ₹1613 when spot 15809 ~ should be ~₹450),
+which corrupts calendar P&L; added a sanity filter (far leg must be 1.2-3x the
+near leg) to drop bad prints.
+
+5yr results (clean): call calendar PF 0.91 (-₹32k, 2/6 yrs); put calendar PF 0.63
+(-₹199k, 1/6 yrs); double calendar PF 0.69 (-₹286k, 2/6 yrs). All LOSE. Reasons:
+long-vega structure entered blindly (often buys expensive vol), and NIFTY weekly
+moves are too large for the ATM "pin" the calendar needs. Also fundamentally hard
+to backtest reliably on daily data (far-leg pricing is the crux and is illiquid).
+
+### SEARCH COMPLETE — every structural family now tested on 5yr real data:
+- iron condor / fly (premium selling, defined risk) -> WINS (weekly VIX>=55) — the
+  ONLY durable edge (~15%/yr on capital, PF 1.87, uncorrelated to market)
+- directional debit/credit spreads -> market beta, not a durable edge
+- jade lizard / ratio spreads -> uncapped tail risk / huge margin, rejected
+- calendar spreads -> lose (this section)
+- 0DTE / single-day (all families: sell near/far, buy directional/straddle,
+  directional credit spreads) -> no durable edge, slippage-fragile
+- stock options (monthly, 6 liquid names) -> every one loses vs index
+The weekly VIX-timed iron condor is the singular durable edge. Search converged.
