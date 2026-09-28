@@ -575,3 +575,27 @@ multi-leg order code + a forward paper run confirm the fills.
 ```bash
 python -m tools.capital_sizing
 ```
+
+---
+## HYBRID (daily + weekly together) + return context
+
+Weekly and daily monthly-P&L are only **0.18 correlated**, so blending them earns
+more per unit of drawdown. `tools/capital_sizing.py` now grid-searches the best
+lot mix at equal risk (worst DD <=35% capital, margin <=75%):
+
+| capital | HYBRID | weekly-only | daily-only |
+|---------|--------|-------------|------------|
+| 100k    | 34% (1wk)          | 34% | 23% |
+| 200k    | **46%** (2wk+1dy)  | 34% | 35% |
+| 500k    | **53%** (5wk+4dy)  | 41% | 41% |
+| 1M      | **53%** (10wk+8dy) | 44% | 41% |
+
+Hybrid beats either alone by ~10-19 pts/yr once capital >=200k (room for >1 lot to
+diversify). Below 200k there's no room, so hybrid == weekly.
+
+Return context (are ~34-53%/yr "low"? No): NIFTY ~12%/yr, Buffett ~20%/yr, elite
+quant funds ~30-40%/yr. 34-53% is exceptional IF it holds forward — but this is a
+~2yr calm/bull backtest, so expect LOWER live. Higher headline returns only come
+from more lots = bigger drawdown (there is no free lunch): e.g. levering the
+hybrid to ~80-96%/yr came with 56-67% drawdowns. For real money a ~20% DD budget
+(=> ~20-30%/yr) is the sane choice.

@@ -2,78 +2,102 @@
 tools/capital_sizing.py
 
 Turns the REAL-DATA backtest per-lot economics into a capital-tier profit table,
-comparing DAILY (0DTE iron-fly) vs WEEKLY (VIX-timed iron condor).
+comparing DAILY (0DTE iron-fly), WEEKLY (VIX-timed iron condor), and a HYBRID of
+the two. All P&L is per YEAR, from real NSE prices (Aug-2024..Sep-2026, ~2.15 yr).
 
-Sizing rule (risk-controlled, honest):
-  lots = min(
-     floor(0.35 * capital / worst_single_loss_per_lot),   # a worst event ~<=35% of capital
-     floor(0.75 * capital / margin_per_lot),               # margin <=75% of capital (buffer)
-  )
-NIFTY lot = 75. Numbers come straight from backtest/options_*_bt.py on real NSE
-prices (Aug-2024 .. Sep-2026, ~2.15 yr). Backtest, not live — see caveats.
+Why a hybrid helps: the weekly and daily P&L streams are only ~0.18 correlated,
+so blending them earns more return per unit of drawdown than either alone.
+
+Sizing rule (risk-controlled, honest): pick the lot mix that MAXIMISES annual
+profit subject to
+  - worst HISTORICAL drawdown <= dd_budget * capital   (default 35%)
+  - total margin              <= margin_budget * capital (default 75%)
+NIFTY lot = 75. Numbers straight from backtest/options_*_bt.py.
 
     python -m tools.capital_sizing
 """
 from __future__ import annotations
 import sys
 from datetime import date
-from math import floor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
+import pandas as pd
 from backtest.options_multi_bt import backtest, iron_condor
 from backtest.options_intraday_bt import run_intraday
 
 YRS = (date(2026, 9, 25) - date(2024, 8, 1)).days / 365.25
 TIERS = [25_000, 50_000, 100_000, 200_000, 500_000, 1_000_000]
+MARGIN_WEEKLY = 37_000
+MARGIN_DAILY = 11_600
+DD_BUDGET = 0.35
+MARGIN_BUDGET = 0.75
 
 
-def per_lot(kind: str):
-    if kind == "weekly":
-        r = backtest(lambda s, rg: (("c", iron_condor(s, 3.0, 2.0)) if rg.vix_pct >= 40 else None))
-        margin = np.percentile([x["margin_rs"] for x in r.weeks if x["strat"] != "flat"], 90)
-        worst, maxdd, yr, n = r.worst_rs, r.max_dd, r.total_rs / YRS, r.n_traded
-        pf, sh = r.profit_factor, r.sharpe
-    else:  # daily 0DTE
-        r = run_intraday("straddle", use_wings=True, wing_pct=1.0, vix_min=40, slip_pts_per_leg=2)
-        margin = np.percentile([x["margin_rs"] for x in r.days], 90)
-        worst, maxdd, yr, n = r.worst_rs, r.max_dd, r.total_rs / YRS, r.n
-        pf, sh = r.profit_factor, r.sharpe
-    return {"yr": yr, "worst": abs(worst), "maxdd": abs(maxdd),
-            "margin": margin, "n_yr": n / YRS, "pf": pf, "sh": sh}
+def _series():
+    w = backtest(lambda s, rg: (("c", iron_condor(s, 3.0, 2.0)) if rg.vix_pct >= 40 else None))
+    wser = pd.Series({pd.Timestamp(x["expiry"]): x["pnl_rs"]
+                      for x in w.weeks if x["strat"] != "flat"}).sort_index()
+    d = run_intraday("straddle", use_wings=True, wing_pct=1.0, vix_min=40, slip_pts_per_leg=2)
+    dser = pd.Series({pd.Timestamp(x["date"]): x["pnl_rs"] for x in d.days}).sort_index()
+    return wser, dser
 
 
-def lots_for(cap, pl):
-    by_risk = floor(0.35 * cap / pl["worst"])
-    by_margin = floor(0.75 * cap / pl["margin"])
-    return max(0, min(by_risk, by_margin))
+def _combo(wser, dser, lw, ld):
+    comb = (wser * lw).add(dser * ld, fill_value=0).sort_index()
+    eq = comb.cumsum()
+    dd = float((eq - eq.cummax()).min())
+    return comb.sum() / YRS, dd  # annual ₹, maxDD ₹ (<=0)
 
 
-def table(name, pl):
-    print(f"\n=== {name} ===")
-    print(f"per-lot: ₹{pl['yr']:,.0f}/yr | worst event ₹{pl['worst']:,.0f} | maxDD ₹{pl['maxdd']:,.0f} "
-          f"| margin ₹{pl['margin']:,.0f} | ~{pl['n_yr']:.0f} trades/yr | PF {pl['pf']} | Sharpe {pl['sh']}")
-    print(f"{'capital':>10} {'lots':>5} {'profit/yr':>11} {'return%':>8} {'worstDD':>11} {'worstDD%':>9}")
-    for cap in TIERS:
-        n = lots_for(cap, pl)
-        if n == 0:
-            print(f"{cap:>10,} {0:>5} {'— too small —':>11} {'':>8} {'':>11} {'':>9}")
-            continue
-        profit = n * pl["yr"]
-        worst = n * pl["maxdd"]
-        print(f"{cap:>10,} {n:>5} {profit:>11,.0f} {profit/cap*100:>7.1f}% "
-              f"{-worst:>11,.0f} {worst/cap*100:>8.1f}%")
+def _best(wser, dser, cap, wonly=False, donly=False):
+    best = None
+    for lw in range(0, 26):
+        if donly and lw > 0:
+            break
+        for ld in range(0, 60):
+            if wonly and ld > 0:
+                break
+            if lw == 0 and ld == 0:
+                continue
+            if lw * MARGIN_WEEKLY + ld * MARGIN_DAILY > MARGIN_BUDGET * cap:
+                continue
+            ann, dd = _combo(wser, dser, lw, ld)
+            if -dd > DD_BUDGET * cap:
+                continue
+            if best is None or ann > best[0]:
+                best = (ann, dd, lw, ld)
+    return best
+
+
+def _fmt(x, cap):
+    if not x:
+        return "— too small —"
+    ann, dd, lw, ld = x
+    return f"₹{ann:>9,.0f}/yr  {ann/cap*100:>4.0f}%  DD {-dd/cap*100:>3.0f}%  [{lw}wk+{ld}dy]"
 
 
 def main():
-    daily = per_lot("daily")
-    weekly = per_lot("weekly")
-    table("DAILY — 0DTE iron-fly ATM (VIX>=40, ~2pt/leg slippage)", daily)
-    table("WEEKLY — VIX-timed iron condor 3%/2% (hold to expiry)", weekly)
-    print("\nCaveats: real NSE prices but only ~2.15yr (mostly calm/bull, no crash in "
-          "sample); 0DTE assumes ~2pt/leg fills; backtest not yet live-verified.")
+    wser, dser = _series()
+    corr = (wser.groupby(wser.index.to_period("M")).sum()
+            .corr(dser.groupby(dser.index.to_period("M")).sum()))
+    print(f"weekly/daily monthly-P&L correlation: {corr:.2f}  (low => hybrid diversifies)")
+    print(f"per-lot/yr: weekly ₹{wser.sum()/YRS:,.0f} (margin ₹{MARGIN_WEEKLY:,}), "
+          f"daily ₹{dser.sum()/YRS:,.0f} (margin ₹{MARGIN_DAILY:,})")
+    print(f"\nSized so worst historical drawdown <= {DD_BUDGET:.0%} of capital, "
+          f"margin <= {MARGIN_BUDGET:.0%}:\n")
+    print(f"{'capital':>10} | {'HYBRID (best)':<38} | {'WEEKLY only':<30} | {'DAILY only':<30}")
+    print("-" * 116)
+    for cap in TIERS:
+        h = _best(wser, dser, cap)
+        wo = _best(wser, dser, cap, wonly=True)
+        do = _best(wser, dser, cap, donly=True)
+        print(f"{cap:>10,} | {_fmt(h, cap):<38} | {_fmt(wo, cap):<30} | {_fmt(do, cap):<30}")
+    print("\nCaveats: real prices but only ~2.15yr (mostly calm/bull, NO crash in sample); "
+          "0DTE assumes ~2pt/leg fills; both are DEFINED-RISK so a crash is capped; "
+          "backtest not yet live-verified. For real money consider a tighter DD budget (~20%).")
 
 
 if __name__ == "__main__":
