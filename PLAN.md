@@ -411,3 +411,59 @@ Net: no simple, capital-appropriate, regime-robust edge found — intraday techn
 python -m tools.fetch_nse_fo --start 2024-08-01 --end 2026-09-25   # ~10 min, resumable
 python -m backtest.options_real_bt --short-offset 3.0 --wing 2.0    # single config
 ```
+
+---
+## Multi-strategy + regime routing on real data (the one thing that survives)
+
+Built a regime-aware, multi-structure backtester on real NSE prices:
+`backtest/options_multi_bt.py` + `tools/run_options_multi.py`. Library of
+DEFINED-RISK structures (iron condor, iron fly, bull-put / bear-call credit
+spreads, long iron-strangle) routed per weekly cycle by a regime classifier
+(VIX level + 60d VIX percentile + VIX 5d change + NIFTY 20d trend/momentum),
+all using only entry-day info (no lookahead).
+
+Standalone (full period, real prices, lot 75):
+| structure            | win% | PF   | ₹ P&L   | worst wk | note |
+|----------------------|------|------|---------|----------|------|
+| iron condor 3/2      | 77.7 | 1.58 | +47,983 | -26,759  | regime-driven |
+| iron condor 2/1      | 71.4 | 0.55 |-133,398 | -17,298  | loses |
+| iron fly /2          | 46.4 | 0.76 |-173,919 | -21,449  | loses |
+| bull-put 3/2         | 83.9 | 2.99 | +63,565 | -10,891  | bull-market beta |
+| bear-call 3/2        | 70.5 | 0.76 | -15,576 | -30,264  | loses (mkt rose) |
+| long strangle        | 25.0 | 0.96 | -13,323 | -13,311  | buying vol loses |
+
+Regime-routed mixes: MIX(all-regime) PF 0.88 (-₹17k); MIX(sell/flat) PF 1.0
+(breakeven). Naive routing did NOT create an edge. Buying premium on "volatile"
+days LOSES (long strangle 25% win) — high-VIX options are expensive and realized
+rarely beats implied (VRP again, in reverse).
+
+### The real finding: VRP TIMING, not regime routing
+Per-regime breakdown of the condor showed the profit comes from HIGH-VIX and
+falling weeks, not calm ones — the opposite of intuition. So we timed the condor
+to sell ONLY when premium is rich (VIX >= 40th pct of its 60d range):
+
+| filter          | trades | win% | PF   | sharpe | ₹ P&L   |
+|-----------------|--------|------|------|--------|---------|
+| always-on       | 112    | 77.7 | 1.58 | 0.81   | +47,983 |
+| VIX pct >= 40   | 58     | 89.7 | 3.13 | 2.10   | +73,333 |
+| VIX pct >= 55   | 46     | 91.3 | 2.75 | 1.94   | +59,704 |
+
+VIX-timed condor (>=40) is POSITIVE in EVERY 6-month sub-period (2024H2 PF2.46,
+2025H1 1.06, 2025H2 5.77, 2026H1 inf) — the first regime-robust result in the
+whole project. This is the genuine volatility-risk-premium edge, correctly timed.
+
+### Why it STILL doesn't fit ₹25k
+Defined-risk cap = one full-width breach ≈ ₹27k loss (2025H1 had exactly one such
+week; it wiped that half's profit). ₹27k > the ₹25k account = single-week ruin.
+Wing/margin ≈ ₹35k already exceeds capital. To size one contract so a breach is
+<=15% of equity you need ≈₹1.5-2L. At that capital the strategy is legitimate
+(~PF 3, sharpe ~2, positive every window). Sizing — not signal — is the blocker.
+
+Bottom line: we finally found a real, timeable, sub-period-robust options edge
+(sell iron condor only when IV is rich). It needs ~₹1.5-2L capital, not ₹25k, and
+still stays hard-gated off until live order code + paper validation exist.
+
+### Reproduce
+```bash
+python -m tools.run_options_multi
+```
