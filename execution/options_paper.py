@@ -92,7 +92,7 @@ def condor_costs_points(lot_size: int, cost_per_leg: float = 20.0,
 class PaperCondorBook:
     """Persists paper condor positions to a JSONL and computes running P&L."""
 
-    def __init__(self, path: Path | None = None, lot_size: int = 65) -> None:
+    def __init__(self, path: Path | None = None, lot_size: int = 75) -> None:
         self.path = path or _LOG
         self.lot_size = lot_size
         self.path.parent.mkdir(parents=True, exist_ok=True)

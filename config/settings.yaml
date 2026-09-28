@@ -8,6 +8,25 @@
 # the hard gate. Current settings are the least-harmful RESEARCH profile only.
 # See PLAN.md for the full findings and the research roadmap.
 # ============================================================================
+# ============================================================================
+# OPTIONS TRADING (this branch). Pick a strategy by NAME and the code runs it.
+# Strategies live in options/registry.py (single source of truth). To use a
+# different one, just change `options.strategy` below to one of:
+#   weekly  — VIX-timed 3%/2% iron condor, held to weekly expiry.
+#             MIN CAPITAL ~Rs1,10,000  (margin ~Rs37,000/lot)  execution-tolerant
+#   daily   — 0DTE ATM iron-fly, entered at open on expiry day, VIX-timed.
+#             MIN CAPITAL ~Rs80,000    (margin ~Rs12,000/lot)  needs tight fills
+#   hybrid  — weekly + daily together (only ~0.18 correlated => diversified).
+#             MIN CAPITAL ~Rs1,60,000  (margin ~Rs49,000 for 1+1)
+# Sizing is risk-first: lots are chosen so the worst historical drawdown stays
+# within `max_drawdown_pct` of capital and margin within `max_margin_pct`.
+# ============================================================================
+options:
+  strategy: weekly            # weekly | daily | hybrid  (see options/registry.py)
+  capital: 100000             # rupees you intend to deploy
+  max_drawdown_pct: 25        # size lots so worst historical DD <= this % of capital
+  max_margin_pct: 60          # ... and blocked margin <= this % of capital
+  live_trading_authorized: false   # hard gate — live order code not written yet
 trading:
   mode: paper
   # Hard safety gate: main.py refuses to run in `mode: live` unless this is true.
