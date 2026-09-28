@@ -72,21 +72,20 @@ def update_and_get_vix(obj) -> list[float]:
     """Append today's live India VIX to the cached daily series (dedup by date) so
     the 60-day percentile stays current, and return the list of daily closes.
     If the live fetch fails, returns whatever history is cached (may be stale)."""
-    closes = []
     df = None
     if _VIX_CSV.exists():
         df = pd.read_csv(_VIX_CSV)
-        df["date"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None).dt.date
-    today = datetime.now().date()
+        df["ts"] = pd.to_datetime(df["timestamp"], errors="coerce").dt.tz_localize(None)
+        df = df.dropna(subset=["ts"]).sort_values("ts")
+    today = pd.Timestamp(datetime.now().date())
     live = _ltp(obj, "NSE", "India VIX", INDIA_VIX_TOKEN)
-    if live is not None and df is not None and today not in set(df["date"]):
-        new = pd.DataFrame([{"timestamp": pd.Timestamp(today), "close": live}])
-        df = pd.concat([df[["timestamp", "close"]], new], ignore_index=True)
-        df.to_csv(_VIX_CSV, index=False)
-    if df is not None:
-        closes = df.sort_values("timestamp")["close"].dropna().tolist()
-        if live is not None and (not closes or closes[-1] != live):
-            closes.append(live)
+    if live is not None and df is not None and today not in set(df["ts"]):
+        new = pd.DataFrame([{"timestamp": today.isoformat(), "close": live, "ts": today}])
+        df = pd.concat([df, new], ignore_index=True).sort_values("ts")
+        df[["timestamp", "close"]].to_csv(_VIX_CSV, index=False)
+    closes = df["close"].dropna().tolist() if df is not None else []
+    if live is not None and (not closes or closes[-1] != live):
+        closes.append(live)
     return closes
 
 

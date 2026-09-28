@@ -53,6 +53,7 @@ def _day(s, d):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", required=True, help="comma-separated, e.g. RELIANCE,HDFCBANK")
+    ap.add_argument("--instr", default="STO", help="STO (stock opt) or IDO (index opt, e.g. BANKNIFTY)")
     ap.add_argument("--start", default="2024-07-08")
     ap.add_argument("--end", default=datetime.now().strftime("%Y-%m-%d"))
     args = ap.parse_args()
@@ -74,7 +75,7 @@ def main():
                 if df is None:
                     miss += 1
                 else:
-                    sto = df[df["FinInstrmTp"] == "STO"]
+                    sto = df[df["FinInstrmTp"] == args.instr]
                     for sym in todo:
                         rows = sto[sto["TckrSymb"] == sym]
                         cols = [c for c in _KEEP if c in rows.columns]
