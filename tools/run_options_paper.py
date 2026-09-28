@@ -75,14 +75,18 @@ def update_and_get_vix(obj) -> list[float]:
     df = None
     if _VIX_CSV.exists():
         df = pd.read_csv(_VIX_CSV)
-        df["ts"] = pd.to_datetime(df["timestamp"], errors="coerce").dt.tz_localize(None)
-        df = df.dropna(subset=["ts"]).sort_values("ts")
-    today = pd.Timestamp(datetime.now().date())
+        # tz-aware parse (handles the +05:30 cache); normalize to IST dates
+        ts = pd.to_datetime(df["timestamp"], format="mixed", errors="coerce", utc=True)
+        df = df.assign(ts=ts.dt.tz_convert("Asia/Kolkata")).dropna(subset=["ts"]).sort_values("ts")
+    today = pd.Timestamp(datetime.now().date(), tz="Asia/Kolkata")
     live = _ltp(obj, "NSE", "India VIX", INDIA_VIX_TOKEN)
-    if live is not None and df is not None and today not in set(df["ts"]):
-        new = pd.DataFrame([{"timestamp": today.isoformat(), "close": live, "ts": today}])
-        df = pd.concat([df, new], ignore_index=True).sort_values("ts")
-        df[["timestamp", "close"]].to_csv(_VIX_CSV, index=False)
+    if live is not None and df is not None and today.date() not in set(df["ts"].dt.date):
+        new = pd.DataFrame([{"close": live, "ts": today}])
+        df = pd.concat([df[["close", "ts"]], new], ignore_index=True).sort_values("ts")
+        # rewrite the WHOLE timestamp column in one consistent tz-aware format
+        out = df.copy()
+        out["timestamp"] = out["ts"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
+        out[["timestamp", "close"]].to_csv(_VIX_CSV, index=False)
     closes = df["close"].dropna().tolist() if df is not None else []
     if live is not None and (not closes or closes[-1] != live):
         closes.append(live)
