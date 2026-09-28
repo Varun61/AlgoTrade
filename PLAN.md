@@ -364,3 +364,50 @@ and an exit-reason + long/short breakdown.
 - Backtesting is now portfolio-level and offline (cached data), not single-symbol.
 - Exit management is no longer the bottleneck; the entry signal is. Research
   effort goes to entry quality / a mean-reversion alternative, not exit tuning.
+
+---
+## REAL-DATA options verdict (definitive — supersedes the synthetic +₹196k)
+
+We stopped guessing and backtested the weekly NIFTY iron condor on ACTUAL settled
+option prices from NSE's F&O bhavcopy archive (533 trading days, 2024-08 .. 2026-09,
+112 weekly cycles). Fetcher: `tools/fetch_nse_fo.py` -> `data/.cache/nse_fo/`.
+Backtester: `backtest/options_real_bt.py` (real entry ClsPric + real expiry
+intrinsic vs settlement underlying; costs + slippage included).
+
+Full-period results (lot=75):
+| config                        | win% | PF   | ₹ P&L    | worst wk | margin |
+|-------------------------------|------|------|----------|----------|--------|
+| condor short2% / wing1%       | 71.4 | 0.55 | -133,380 | -230 pts | 16k    |
+| condor short2% / wing1.5%     | 74.1 | 0.61 | -130,065 | -373 pts | 24k    |
+| condor short3% / wing1%       | 63.4 | 0.94 |   -4,410 | -149 pts | 17k    |
+| condor short3% / wing2%       | 77.7 | 1.58 |  +48,008 | -357 pts | 35k    |
+| iron-fly short0% / wing1%     | 31.2 | 0.75 |  -87,765 |  -95 pts |  5k    |
+| naked strangle short3%        | 92.9 | 2.65 | +157,410 | -622 pts | 275k   |
+| naked strangle short4%        | 99.1 | 4.33 | +109,838 | -440 pts | 275k   |
+
+Two hard conclusions:
+1. **The synthetic condor edge (+₹196k) was a MODEL ARTIFACT.** Black-Scholes+VIX
+   underpriced tail weeks and ignored real skew. On real prices, nearly every
+   defined-risk condor LOSES. Wings are priced efficiently; you overpay for
+   protection and short strikes get breached more than the model assumed.
+2. **The one positive condor (short3%/wing2%, PF 1.58) is NOT robust — it is a
+   low-vol REGIME artifact.** Sub-period PF: 2024H2=0.6, 2025H1=0.76, 2025H2=4.2,
+   2026H1=30.7, 2026H2=23.1. All the profit came from the unusually calm late-2025→2026
+   regime; it LOST in the two earlier, more volatile windows. Same pattern for the
+   naked strangle (2025H1 had a single -622 pt = -₹46k week).
+
+The volatility-risk-premium edge is REAL but thin and regime-dependent. Harvesting
+it safely needs (a) a vol-regime filter, (b) far more than ₹25k capital, and
+(c) uncapped-tail tolerance the account doesn't have. A naive weekly condor on
+₹25k is not a validated edge. Real bhavcopy in UDiFF format only goes back to
+mid-2024, so we also can't test a real crash (2020/2022) — the sample lacks a
+true stress week, and even within it half the windows lost.
+
+Net: no simple, capital-appropriate, regime-robust edge found — intraday technical
+(gross PF ~1.0) OR weekly options condor. Live trading stays hard-gated off.
+
+### How to reproduce
+```bash
+python -m tools.fetch_nse_fo --start 2024-08-01 --end 2026-09-25   # ~10 min, resumable
+python -m backtest.options_real_bt --short-offset 3.0 --wing 2.0    # single config
+```
