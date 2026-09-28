@@ -634,3 +634,44 @@ worse. REJECTED as a durable edge — it only worked in the 2024-2026 calm regim
 options/registry.py weekly now uses vix>=55 (more robust). Realistic expectation
 for real money: ~12-16%/yr on ₹1.1-1.5L, one lot, with down months (worst month
 in 5yr ≈ -₹22.7k) and occasional down YEARS. Defined-risk throughout.
+
+---
+## More structures + stock options tested — nothing beats the NIFTY weekly condor
+
+### Weekly structure variants (vix>=55, 5yr year-by-year)
+Tested market-standard alternatives against the base 3%/2% condor, judged on
+RETURN-ON-MARGIN (capital efficiency) + robustness, all defined-risk unless noted:
+| structure          | PF   | Sharpe | ₹/yr/lot | margin | ROM/yr | +yrs |
+|--------------------|------|--------|----------|--------|--------|------|
+| **condor 3%/2%**   | 1.87 | 1.23   | 17,065   | 36k    | **47%**| 5/6  |
+| broken-wing c2/p4  | 2.11 | 1.44   | 23,304   | 74k    | 31%    | 5/6  |
+| jade lizard p3/c2  | 1.88 | 1.57   | 27,442   | 1.83M  | ~2%    | 6/6  |
+| condor 3%/1%       | 1.28 | 0.51   | 4,351    | 18k    | 24%    | 4/6  |
+Jade lizard's 6/6 and high Sharpe are a MIRAGE: its naked short put needs ~₹18L
+margin and carries uncapped crash risk. Broken-wing makes more ₹/lot but needs
+2x margin => worse ROM. Narrower wings kill the edge. The base 3%/2% condor is the
+most capital-efficient and already near-optimal. NO weekly variant beats it.
+
+### Daily 0DTE variants (5yr) — all fail
+iron-fly ATM, condors 0.5%/1%, various wings: every variant is +2-3/6 years and
+LOSES over 5yr. 0DTE premium selling is confirmed a 2024-2026 regime artifact.
+
+### Stock options vs index (MONTHLY condor, same 2024-07..2026-09 window)
+Single stocks are monthly-only. Fetched RELIANCE/HDFCBANK/ICICIBANK/SBIN/INFY/TCS
+(tools/fetch_nse_stock_opt.py) and ran the same condor (backtest/options_monthly_bt.py):
+| symbol   | win% | PF   | Sharpe |
+|----------|------|------|--------|
+| **NIFTY**| 90.0 | 2.94 | 1.19   |
+| RELIANCE | 68.0 | 0.73 | -0.38  |
+| HDFCBANK | 63.6 | 0.37 | -0.99  |
+| ICICIBANK| 76.0 | 0.55 | -0.64  |
+| SBIN     | 44.0 | 0.14 | -2.21  |
+| INFY     | 61.1 | 0.81 | -0.28  |
+| TCS      | 52.9 | 0.48 | -1.07  |
+**Even in the favorable regime where NIFTY thrived, EVERY stock condor lost.**
+Single-stock premium selling is destroyed by idiosyncratic jump/event risk
+(earnings gaps, news) that a 5% condor can't contain; the index's diversification
+is precisely why index premium-selling works. Stock options: REJECTED.
+
+### Final: the NIFTY weekly VIX-timed 3%/2% iron condor remains the single best,
+most robust, most capital-efficient strategy found. Nothing tested beats it.
