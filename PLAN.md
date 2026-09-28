@@ -467,3 +467,63 @@ still stays hard-gated off until live order code + paper validation exist.
 ```bash
 python -m tools.run_options_multi
 ```
+
+---
+## Drawdown reduction, same-day (0DTE) options, and capital sizing
+
+### 1. Cutting the weekly condor's tail (stop-loss overlay)
+Added a mark-to-market stop/take-profit to `backtest/options_multi_bt.py`
+(`stop_mult`, `tp_frac`; marks on real daily closes). On the VIX-timed condor:
+| overlay              | PF   | ₹ total | worst wk | maxDD   |
+|----------------------|------|---------|----------|---------|
+| hold to expiry       | 3.13 | +73,333 | -26,759  | -26,759 |
+| stop @1.0x credit    | 1.69 | +44,936 | -11,762  | -22,069 |
+| stop @2.0x credit    | 1.45 | +32,839 | -16,285  | -29,422 |
+The 1x-credit stop **more than halves the worst week** (-26.8k -> -11.8k) but
+whipsaws calm weeks (exits dips that recover), cutting total 73k->45k. It is a
+lever for a smaller account, not free. Take-profit alone doesn't help the tail.
+
+### 2. Same-day / 0DTE options (enter at OPEN, exit at CLOSE on expiry day)
+New backtester `backtest/options_intraday_bt.py` (real per-contract daily OHLC;
+strikes chosen from NIFTY index OPEN = no lookahead). Selling the expiry-day
+premium and letting it decay into the close is the highest-theta trade:
+| structure (0DTE)        | PF   | sharpe | ₹ total | worst   | margin | risk |
+|-------------------------|------|--------|---------|---------|--------|------|
+| short straddle ATM      | 1.75 | 3.54   | +206k   | -23k    | big    | naked |
+| short strangle 1% OTM   | 2.36 | 4.12   | +94k    | -13.6k  | big    | naked |
+| **iron-fly ATM w1%**    | 1.37 | 2.09   | +87k    | -14k    | ~10k   | DEFINED |
+The **defined-risk 0DTE iron-fly fits a ₹25k margin (~₹10k/lot)** and is POSITIVE
+in every 6-month window. BUT it is EXECUTION-SENSITIVE:
+slip 1pt/leg PF1.37 -> 2pt 1.21 -> 3pt 1.08 -> 5pt 0.84 (dies). It is a 4-leg
+structure filled at the open (widest spreads), so fills matter. VIX-timing helps
+here too: at 3pt slip, vix_pct>=40 -> PF1.23 (calm days actually lose). Intraday
+stops hurt (whipsaw). Only trades on expiry days (~weekly cadence).
+
+### 3. Comfortable capital (the real answer to "what margin makes money")
+Rule: size so ONE worst-case loss is <=15% of the account AND margin <=50%.
+Period Aug-2024..Sep-2026 (~2.15 yr), 1 lot (NIFTY lot 75):
+| strategy                         | worst loss | margin | comfy capital | est %/yr |
+|----------------------------------|------------|--------|---------------|----------|
+| Weekly condor VIX>=40 (hold)     | -26,759    | 37k    | ~₹1.8 L       | ~19%     |
+| Weekly condor VIX>=40 (1x stop)  | -11,762    | 37k    | ~₹80 k        | ~27%     |
+| 0DTE iron-fly VIX>=40 (slip 2pt) | -14,399    | 12k    | ~₹1.0 L       | ~24%     |
+| 0DTE iron-fly VIX>=40 (slip 3pt) | -14,699    | 12k    | ~₹1.0 L       | ~15%     |
+
+**Takeaways:**
+- ~₹80k-1L is the comfortable floor for ONE lot with a survivable tail; expected
+  ~15-27%/yr, sharpe ~1.4-2.1. This is a genuine, realistic edge at that capital.
+- ₹25k: margin fits, but one bad week/day = 50-100% of the account = ruin risk.
+  Not "comfortable" — it's all-in on every trade.
+- Scale linearly: ~₹2L -> 2 lots or run condor + 0DTE together for diversification.
+- The 0DTE iron-fly is the most capital-efficient (₹12k margin) but demands tight
+  limit-order execution; the weekly condor is execution-tolerant but needs more
+  capital for the same tail safety.
+
+Live trading stays hard-gated until (a) live multi-leg order code exists and
+(b) forward paper-trading confirms real fills match these assumptions.
+
+### Reproduce
+```bash
+python -m backtest.options_intraday_bt      # 0DTE same-day table
+python -m tools.run_options_multi           # weekly structures + VIX timing
+```

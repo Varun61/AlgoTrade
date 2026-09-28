@@ -132,6 +132,18 @@ def _expiry_value(S: float, legs: list[Leg]) -> float:
     return v
 
 
+def _mark_value(day: pd.DataFrame, expiry, legs: list[Leg]) -> float | None:
+    """Current liquidation value of the position (points) at a day's real closes.
+    None if any leg isn't quoted that day (can't mark => hold)."""
+    v = 0.0
+    for lg in legs:
+        px = _leg_close(day, expiry, lg.strike, lg.is_call)
+        if px is None:
+            return None
+        v += lg.qty * px
+    return v
+
+
 def _defined_risk(legs, entry_debit) -> float:
     """Max loss (points) of a defined-risk structure, brute-forced over strikes."""
     strikes = sorted({lg.strike for lg in legs})
@@ -244,7 +256,16 @@ def _load_day(path: Path) -> pd.DataFrame:
 
 
 def backtest(router: StrategyRouter, start=None, end=None,
-             min_dte=3, max_dte=10) -> MultiResult:
+             min_dte=3, max_dte=10,
+             stop_mult: float | None = None,
+             tp_frac: float | None = None) -> MultiResult:
+    """
+    stop_mult: if set, close early when unrealized loss reaches stop_mult x credit
+               received (e.g. 1.0 = exit at a 1x-credit loss). Cuts the full-width
+               tail on breach weeks. Marked on real daily closes.
+    tp_frac:   if set, close early when unrealized profit reaches tp_frac x credit
+               (e.g. 0.5 = take half the max profit and flatten risk early).
+    """
     files = sorted(_FO_DIR.glob("*.csv"))
     dates = [datetime.strptime(f.stem, "%Y-%m-%d").date() for f in files]
     by_date = dict(zip(dates, files))
@@ -263,6 +284,27 @@ def backtest(router: StrategyRouter, start=None, end=None,
             continue
         spot = float(spot_col.iloc[0])
 
+        # early stop-loss / take-profit exit (mark on real daily closes, before expiry)
+        if (open_pos is not None and open_pos["strat"] != "_flat_placeholder"
+                and d < open_pos["expiry"] and (stop_mult is not None or tp_frac is not None)):
+            p = open_pos
+            credit = -p["debit"]  # >0 for a net-credit structure
+            if credit > 0:
+                mark = _mark_value(day, p["expiry"], p["legs"])
+                if mark is not None:
+                    unreal = mark - p["debit"]  # points, +profit / -loss
+                    hit = ((stop_mult is not None and unreal <= -stop_mult * credit)
+                           or (tp_frac is not None and unreal >= tp_frac * credit))
+                    if hit:
+                        pnl_pts = unreal - p["cost_pts"]
+                        res.weeks.append({
+                            "entry": p["entry"], "expiry": p["expiry"], "strat": p["strat"],
+                            "regime": p["regime"], "S0": round(p["S0"], 0), "S_exp": round(spot, 0),
+                            "pnl_rs": round(pnl_pts * _LOT, 0), "margin_rs": round(p["margin"], 0),
+                            "exit": "stop/tp",
+                        })
+                        open_pos = None
+
         # settle
         if open_pos is not None and d >= open_pos["expiry"]:
             p = open_pos
@@ -275,6 +317,7 @@ def backtest(router: StrategyRouter, start=None, end=None,
                     "entry": p["entry"], "expiry": p["expiry"], "strat": p["strat"],
                     "regime": p["regime"], "S0": round(p["S0"], 0), "S_exp": round(spot, 0),
                     "pnl_rs": round(pnl_pts * _LOT, 0), "margin_rs": round(p["margin"], 0),
+                    "exit": "expiry",
                 })
                 open_pos = None
 
