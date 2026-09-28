@@ -180,11 +180,15 @@ class Regime:
     vix: float
     vix_pct: float
     trend: str  # up/down/flat
+    rv10: float = 0.0       # realized vol (10d, annualized %)
+    iv_rv: float = 1.0      # VIX / realized-vol ratio (volatility-risk-premium richness)
 
 
 def classify(idx_row) -> Regime:
     vix = float(idx_row["vix"])
     vpct = float(idx_row["vix_pct60"]) if not np.isnan(idx_row["vix_pct60"]) else 50.0
+    rv = float(idx_row["rv10"]) if not np.isnan(idx_row["rv10"]) else 0.0
+    iv_rv = (vix / rv) if rv > 0 else 1.0
     close, sma, mom = idx_row["nifty"], idx_row["sma20"], idx_row["mom10"]
     trend = "flat"
     if not np.isnan(sma):
@@ -201,7 +205,7 @@ def classify(idx_row) -> Regime:
         label = "trend_down"
     else:
         label = "calm"
-    return Regime(label, vix, vpct, trend)
+    return Regime(label, vix, vpct, trend, rv, iv_rv)
 
 
 # ----------------------------- backtester ----------------------------------

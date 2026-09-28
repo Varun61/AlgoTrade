@@ -790,3 +790,42 @@ CONCLUSION: the IC is already at its efficient point. Threshold-robust, executio
 tolerant, PF 1.87, -27k maxDD, uncorrelated to market. No tweak (sizing, exits,
 complements, other underlyings, 0DTE, more structures) improves it risk-adjusted.
 Priority now: validate live/paper execution, NOT more backtest optimization.
+
+---
+## Attacking the SOURCE of the edge (IV/RV, expected-move strikes, width grid)
+
+Per the "attack the edge, don't bolt on strategies" priority. Added rv10 + iv_rv
+(VIX/realized-vol) to the regime classifier. 5yr results (VIX>=55 gate):
+
+### 1. IV vs realized volatility (IV/RV) — thesis PARTIALLY confirmed
+IC P&L by IV/RV bucket: sweet spot 1.1-1.6 (PF 1.3-1.8); IV/RV~1 LOSES (PF 0.85);
+IV/RV>1.6 LOSES (PF 0.68, post-spike weeks). IV/RV ALONE is a WORSE filter than VIX
+pctile (PF 1.21 vs 1.87). BUT combined:
+  VIX>=55 AND IV/RV>=1.1: PF 2.59, Sharpe 1.83, maxDD -23.7k (vs current PF 1.87,
+  Sharpe 1.23, -26.8k) — higher QUALITY but fewer trades so LESS total (60k vs 89k).
+=> The edge is best described as "sell when VIX elevated AND options price more vol
+   than realized". A quality-vs-quantity lever, not a free return boost.
+
+### 2. Expected-move strike selection — the one genuine return improvement
+Strikes at k x (weekly expected move = spot*VIX/100*sqrt(7/365)) instead of fixed 3%:
+| variant           | +yrs | total | PF   | Sharpe | worst wk | ret/maxDD |
+|-------------------|------|-------|------|--------|----------|-----------|
+| fixed 3%/5%       | 5/6  |  90.7k| 1.87 | 1.23   | -26.8k   | 3.31      |
+| EM 1.0x (=1 SD)   | 4/6  | 161.5k| 1.82 | 1.39   | -40.2k   | 4.02      |
+| EM 1.2x           | 5/6  | 122.9k| 1.84 | 1.20   | -42.8k   | 2.87      |
+| EM 1.0x+IV/RV>=1.1| 4/6  | 136.0k| 2.62 | 2.42   | -24.7k   | —         |
+Economically principled (sell at ~1 SD, adapts to vol) — the good kind of change,
+not a curve-fit. EM 1.0x: +78% return, better Sharpe, better return/maxDD, BUT
+bigger single-week tail (-40k) and 4/6 yrs (lost 2022+2023). EM 1.0x+IV/RV: best
+quality (PF 2.62, Sharpe 2.42) AND lowest tail (-24.7k) but 4/6 yrs + high variance.
+
+### 3. Width grid — 3%/5% confirmed best-balanced
+2/4 PF1.37, 2.5/4.5 PF1.65, 3/5 PF1.87 (best PF, lowest DD), 3.5/5.5 PF1.88,
+4/6 PF1.37, 3/6 PF1.91 (more $ but -40k DD). Current 3/5 is the efficient point.
+
+### Verdict
+Expected-move strikes (esp. EM 1.0x + IV/RV>=1.1) is the FIRST real refinement that
+improves profitability/quality — because it attacks the edge's source, not bolt-on
+complexity. NOT switching live blindly: bigger tail + 4/6-yr robustness need
+out-of-sample proof. Right move = paper-test EM variant in PARALLEL with fixed-3%,
+compare live fills, then decide. Do NOT abandon the robust fixed-3% baseline yet.
