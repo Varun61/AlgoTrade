@@ -675,3 +675,30 @@ is precisely why index premium-selling works. Stock options: REJECTED.
 
 ### Final: the NIFTY weekly VIX-timed 3%/2% iron condor remains the single best,
 most robust, most capital-efficient strategy found. Nothing tested beats it.
+
+---
+## Exhaustive single-day (0DTE) research — no robust edge found
+
+Tested every major single-day option family on 5yr real NIFTF data (enter at open,
+exit at close; strikes from index open; costs+slippage), year-by-year:
+
+| 0DTE family                          | verdict | detail |
+|--------------------------------------|---------|--------|
+| Sell near-ATM premium (fly/condor)   | FAIL    | regime artifact — loses 2021-2023, only 2024-26 |
+| Sell far-OTM 5-7% (cheap wings)       | FAIL    | PF ~0.0 — tiny premium can't cover costs+breach |
+| Buy directional on gap (momentum/fade)| FAIL    | 0/6 to 2/6 yrs — gap not predictive, theta bleeds |
+| Buy straddle/strangle (long gamma)   | FAIL    | loses EVERY year — 0DTE theta destroys buyers |
+| Directional credit spread (sell w/ gap)| MARGINAL/FRAGILE | 6/6 yrs at 2pt slip BUT only 3/6 at realistic 3pt (PF 1.43), dead at 4pt (PF 1.10); win% 80%->49% with slippage; small n (10-38/yr) |
+
+The directional credit spread (gap up -> sell put spread, gap down -> sell call
+spread) was the only 0DTE idea with a pulse, but it is too slippage-fragile and
+small-sample to trust with real money — its apparent edge evaporates at realistic
+execution costs.
+
+CONCLUSION: single-day/0DTE option trading has NO durable edge in 5yr of real
+data. The theta edge exists for SELLERS but is regime-dependent (fails in volatile
+years) and slippage-fragile; BUYERS bleed theta every year; directional gap
+signals aren't predictive enough to overcome costs. This is consistent across
+selling near/far, buying directional/straddle, and directional credit spreads.
+The durable edge remains the WEEKLY VIX-timed condor (held to expiry, execution-
+tolerant). 0DTE is left as research only; not for real money.
