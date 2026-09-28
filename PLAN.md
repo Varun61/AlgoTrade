@@ -829,3 +829,31 @@ improves profitability/quality — because it attacks the edge's source, not bol
 complexity. NOT switching live blindly: bigger tail + 4/6-yr robustness need
 out-of-sample proof. Right move = paper-test EM variant in PARALLEL with fixed-3%,
 compare live fills, then decide. Do NOT abandon the robust fixed-3% baseline yet.
+
+---
+## Remaining suggested experiments — status & stopping point
+
+| suggestion            | status        | result |
+|-----------------------|---------------|--------|
+| capital/leverage      | tested         | scales return AND DD 1:1, no edge |
+| IC width grid         | tested         | 3/5 best fixed; EM (vol-adaptive) beats it |
+| expected-move strikes | tested ✅      | main win -> weekly_em (~21%/yr, PF 2.62) |
+| IV vs realized vol    | tested ✅      | confirmed; combined gate in weekly_em |
+| range/trend filter    | tested         | trend-adaptive + regime-router WORSE |
+| entry timing intraday | NOT testable   | only daily OHLC, no intraday bars |
+| post-move entry       | tested (proxy) | inconclusive, only 7 qualifying trades |
+| dynamic wings         | tested         | wider 1.5x EM looked better in-sample (PF 2.91) — NOT adopting (overfit DoF) |
+| re-centering/adjust   | tested         | = stops; hurt (whipsaw) |
+| scale after live      | agreed         | the plan |
+
+weekly_em is direction-NEUTRAL (corr with NIFTY move = 0.04). It loses on big
+weekly moves EITHER way (up>2%: -19k; down<-2%: -20k) and wins on calm weeks
+(+-2%: +171k, 98% win). It does NOT fail in bull runs per se — 2023 (bull) lost
+because it was a thin-premium grind, 2024 (bull) won on rich premium. Edge = premium
+richness, not direction.
+
+STOPPING POINT: nearly every tweak improves the in-sample backtest (EM, wider
+wings, IV/RV, ...). Each is a degree of freedom = overfitting risk. Deliberately
+NOT stacking more. Baseline weekly (fixed 3/2, minimal DoF, 5/6 yrs) + one
+principled refinement weekly_em (EM+IV/RV) run in PARALLEL on paper. Decision by
+out-of-sample validation, not more optimization.
