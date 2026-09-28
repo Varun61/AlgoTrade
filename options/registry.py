@@ -60,6 +60,7 @@ class OptionsStrategy:
     description: str
     min_capital: int
     components: list[Component] = field(default_factory=list)
+    warning: str = ""          # non-empty => shown loudly by the runner
 
     @property
     def margin_one_of_each(self) -> float:
@@ -69,7 +70,7 @@ class OptionsStrategy:
 # ---------------------------------------------------------------------------
 # Component builders (run the real-data backtest, return a per-lot ₹ P&L series)
 # ---------------------------------------------------------------------------
-def _weekly_component(start=None, end=None, vix_min=40.0,
+def _weekly_component(start=None, end=None, vix_min=55.0,
                       short_pct=3.0, wing_pct=2.0) -> Component:
     r = _weekly_bt(
         lambda spot, reg: (("condor", iron_condor(spot, short_pct, wing_pct))
@@ -103,10 +104,18 @@ def _p90(vals, fallback):
 # ---------------------------------------------------------------------------
 # min_capital = worst single-trade loss / 0.25 (the default 25% drawdown budget),
 # i.e. enough that one worst historical trade is <=25% of the account.
+#
+# 5-YEAR VERDICT (real NSE data 2021-07..2026-09, incl. the 2022 selloff):
+#   weekly (vix>=55) is the ONLY strategy positive across the window — PF 1.87,
+#   Sharpe 1.23, ~₹18k/yr per lot, positive in 5 of 6 years (only 2023 lost).
+#   daily 0DTE and the daily+weekly hybrid LOSE over 5 years; they only worked in
+#   the calm 2024-2026 regime. They are kept for research but carry a warning and
+#   must NOT be used with real money on the current evidence.
 def build_weekly(start=None, end=None) -> OptionsStrategy:
     return OptionsStrategy(
         name="weekly", kind="weekly", min_capital=110_000,  # worst week ~₹27k / 0.25
-        description="VIX-timed 3%/2% iron condor held to weekly expiry.",
+        description="VIX-timed (>=55th pct) 3%/2% iron condor, held to weekly expiry. "
+                    "~₹18k/yr per lot over 5yr; the durable, recommended strategy.",
         components=[_weekly_component(start, end)],
     )
 
@@ -115,6 +124,8 @@ def build_daily(start=None, end=None) -> OptionsStrategy:
     return OptionsStrategy(
         name="daily", kind="daily", min_capital=80_000,  # worst day ~₹19k / 0.25
         description="0DTE ATM iron-fly (1% wings), entered at open on expiry day, VIX-timed.",
+        warning="FAILED the 5-year test — loses 2021-2023, only profitable in the "
+                "2024-2026 calm regime. Not for real money on current evidence.",
         components=[_daily_component(start, end)],
     )
 
@@ -122,7 +133,9 @@ def build_daily(start=None, end=None) -> OptionsStrategy:
 def build_hybrid(start=None, end=None) -> OptionsStrategy:
     return OptionsStrategy(
         name="hybrid", kind="hybrid", min_capital=160_000,  # combined worst DD ~₹38k / 0.25
-        description="Weekly condor + daily 0DTE together (~0.18 correlated => diversified).",
+        description="Weekly condor + daily 0DTE together (~0.18 correlated).",
+        warning="The daily leg fails the 5-year test, dragging the hybrid below the "
+                "weekly-only result over 2021-2026. Prefer 'weekly' for real money.",
         components=[_weekly_component(start, end), _daily_component(start, end)],
     )
 

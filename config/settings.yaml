@@ -12,12 +12,16 @@
 # OPTIONS TRADING (this branch). Pick a strategy by NAME and the code runs it.
 # Strategies live in options/registry.py (single source of truth). To use a
 # different one, just change `options.strategy` below to one of:
-#   weekly  — VIX-timed 3%/2% iron condor, held to weekly expiry.
-#             MIN CAPITAL ~Rs1,10,000  (margin ~Rs37,000/lot)  execution-tolerant
-#   daily   — 0DTE ATM iron-fly, entered at open on expiry day, VIX-timed.
-#             MIN CAPITAL ~Rs80,000    (margin ~Rs12,000/lot)  needs tight fills
-#   hybrid  — weekly + daily together (only ~0.18 correlated => diversified).
-#             MIN CAPITAL ~Rs1,60,000  (margin ~Rs49,000 for 1+1)
+#   weekly  — VIX-timed (>=55th pct) 3%/2% iron condor, held to weekly expiry.
+#             MIN CAPITAL ~Rs1,10,000  (margin ~Rs37,000/lot)
+#             *** RECOMMENDED *** — the only strategy PROFITABLE across the full
+#             5-year test (2021-2026, incl. the 2022 selloff): PF 1.87, ~16%/yr,
+#             positive in 5 of 6 years. Realistic, not a money printer.
+#   daily   — 0DTE ATM iron-fly, entered at open on expiry day.
+#             MIN CAPITAL ~Rs80,000.  ⚠️ FAILED the 5-year test (loses 2021-2023;
+#             only worked in the 2024-2026 calm regime). Research only.
+#   hybrid  — weekly + daily together.  ⚠️ daily leg fails 5yr; worse than weekly
+#             alone over 2021-2026. Prefer 'weekly'.
 # Sizing is risk-first: lots are chosen so the worst historical drawdown stays
 # within `max_drawdown_pct` of capital and margin within `max_margin_pct`.
 # ============================================================================

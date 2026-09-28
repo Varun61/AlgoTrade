@@ -599,3 +599,38 @@ quant funds ~30-40%/yr. 34-53% is exceptional IF it holds forward — but this i
 from more lots = bigger drawdown (there is no free lunch): e.g. levering the
 hybrid to ~80-96%/yr came with 56-67% drawdowns. For real money a ~20% DD budget
 (=> ~20-30%/yr) is the sane choice.
+
+---
+## 5-YEAR REAL-DATA VERDICT (2021-07..2026-09, incl. 2022 selloff) — the honest reset
+
+Extended the NSE fetch to the legacy bhavcopy format (tools/fetch_nse_fo.py) and
+re-ran everything on ~5.2 years. This overturns the optimistic 2-year picture.
+
+WEEKLY VIX-timed condor 3%/2%, per year (PF):
+| filter    | 21H2 | 2022 | 2023 | 2024 | 2025 | 2026 | +yrs | ₹/lot/yr | Sharpe |
+|-----------|------|------|------|------|------|------|------|----------|--------|
+| vix>=40   | 0.85 | 0.96 | 0.63 | 5.42 | 1.10 | inf  | 3/6  | ~16,000  | 0.84   |
+| **vix>=55** | inf | 1.17 | 0.61 | 4.69 | 1.10 | inf | **5/6** | **~18,000** | **1.23** |
+
+DAILY 0DTE iron-fly, per year (PF): 21H2 0.65, 2022 0.57, 2023 0.45, 2024 1.44,
+2025 1.70, 2026 1.13 → **LOSES over 5yr (PF 0.95)**. Stricter VIX filters make it
+worse. REJECTED as a durable edge — it only worked in the 2024-2026 calm regime.
+
+### Conclusions (supersede earlier optimistic numbers)
+1. **The 2-year backtest was regime-lucky.** 2024-2026 was an unusually calm/bull
+   window; both strategies shine there. On the full 5 years the true weekly edge
+   is ~₹18k/yr per lot (~16%/yr on ₹110k), NOT the ₹34k/yr the 2-year window showed.
+2. **Weekly (vix>=55) is the only survivor** — positive in 5 of 6 years (only 2023
+   lost), PF 1.87, Sharpe 1.23. Real but modest and regime-sensitive; expect
+   losing years.
+3. **Daily 0DTE and the hybrid FAIL the 5-year test.** Kept in the registry for
+   research but flagged with warnings; not for real money on current evidence.
+4. **"Use more trading days" is counterproductive.** Trading MORE weeks (lower VIX
+   threshold, filling calm weeks) LOST more (vix40 3/6 yrs vs vix55 5/6). The
+   discipline of sitting out thin-premium weeks IS the edge. No calm-week filler
+   beat sitting out.
+
+### Default changed
+options/registry.py weekly now uses vix>=55 (more robust). Realistic expectation
+for real money: ~12-16%/yr on ₹1.1-1.5L, one lot, with down months (worst month
+in 5yr ≈ -₹22.7k) and occasional down YEARS. Defined-risk throughout.

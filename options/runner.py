@@ -32,6 +32,8 @@ def _cfg() -> dict:
 
 def _print_plan(name: str, strat, p: LotPlan):
     print(f"\n=== {name.upper()} — {strat.description} ===")
+    if strat.warning:
+        print(f"  ⚠️  {strat.warning}")
     print(f"min capital: ₹{strat.min_capital:,} | your capital: ₹{p.capital:,}")
     if sum(p.lots.values()) == 0:
         print("  ⚠️  capital too small to run even 1 lot within the risk/margin budget.")
