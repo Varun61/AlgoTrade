@@ -45,7 +45,22 @@ def _session() -> requests.Session:
     return s
 
 
-def _fetch_day(s: requests.Session, d: datetime) -> pd.DataFrame | None:
+# UDiFF (new) format started 2024-07-08; older dates use the legacy fo<DDMMMYYYY>bhav
+_UDIFF_CUTOVER = datetime(2024, 7, 8)
+_IDX_CSV = Path(__file__).parent.parent / "data" / ".cache" / "index" / "nifty_1d.csv"
+
+
+def _index_close() -> dict:
+    """date -> NIFTY close, to fill UndrlygPric for the legacy format (which lacks it)."""
+    try:
+        df = pd.read_csv(_IDX_CSV)
+        df["date"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None).dt.strftime("%Y-%m-%d")
+        return dict(zip(df["date"], df["close"]))
+    except Exception:
+        return {}
+
+
+def _fetch_udiff(s: requests.Session, d: datetime) -> pd.DataFrame | None:
     ds = d.strftime("%Y%m%d")
     url = f"https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_{ds}_F_0000.csv.zip"
     try:
@@ -53,12 +68,52 @@ def _fetch_day(s: requests.Session, d: datetime) -> pd.DataFrame | None:
     except Exception:
         return None
     if r.status_code != 200 or r.content[:2] != b"PK":
-        return None  # holiday / not available
+        return None
     z = zipfile.ZipFile(io.BytesIO(r.content))
     df = pd.read_csv(z.open(z.namelist()[0]))
     nifty = df[(df["TckrSymb"] == "NIFTY") & (df["FinInstrmTp"] == "IDO")]
     cols = [c for c in _KEEP if c in nifty.columns]
     return nifty[cols].copy()
+
+
+def _fetch_legacy(s: requests.Session, d: datetime, idx: dict) -> pd.DataFrame | None:
+    """Legacy fo<DD><MON><YYYY>bhav.csv.zip (pre-UDiFF). Maps to the UDiFF schema and
+    fills UndrlygPric from the NIFTY index close (legacy files have no underlying)."""
+    mon = d.strftime("%b").upper()
+    url = (f"https://nsearchives.nseindia.com/content/historical/DERIVATIVES/"
+           f"{d.year}/{mon}/fo{d.strftime('%d')}{mon}{d.year}bhav.csv.zip")
+    try:
+        r = s.get(url, timeout=25)
+    except Exception:
+        return None
+    if r.status_code != 200 or r.content[:2] != b"PK":
+        return None
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    df = pd.read_csv(z.open(z.namelist()[0]))
+    df.columns = [c.strip() for c in df.columns]
+    nifty = df[(df["INSTRUMENT"] == "OPTIDX") & (df["SYMBOL"] == "NIFTY")].copy()
+    if nifty.empty:
+        return None
+    trad = pd.to_datetime(nifty["TIMESTAMP"], format="%d-%b-%Y", errors="coerce")
+    xpry = pd.to_datetime(nifty["EXPIRY_DT"], format="%d-%b-%Y", errors="coerce")
+    out = pd.DataFrame({
+        "TradDt": trad.dt.strftime("%Y-%m-%d"),
+        "XpryDt": xpry.dt.strftime("%Y-%m-%d"),
+        "StrkPric": nifty["STRIKE_PR"].astype(float),
+        "OptnTp": nifty["OPTION_TYP"],
+        "OpnPric": nifty["OPEN"], "HghPric": nifty["HIGH"],
+        "LwPric": nifty["LOW"], "ClsPric": nifty["CLOSE"],
+        "SttlmPric": nifty["SETTLE_PR"],
+        "UndrlygPric": idx.get(d.strftime("%Y-%m-%d"), float("nan")),
+        "OpnIntrst": nifty["OPEN_INT"], "TtlTradgVol": nifty["CONTRACTS"],
+    })
+    return out
+
+
+def _fetch_day(s: requests.Session, d: datetime, idx: dict) -> pd.DataFrame | None:
+    if d >= _UDIFF_CUTOVER:
+        return _fetch_udiff(s, d)
+    return _fetch_legacy(s, d, idx)
 
 
 def main() -> None:
@@ -71,6 +126,7 @@ def main() -> None:
     start = datetime.strptime(args.start, "%Y-%m-%d")
     end = datetime.strptime(args.end, "%Y-%m-%d")
     s = _session()
+    idx = _index_close()
     d = start
     got = skip = holiday = 0
     while d <= end:
@@ -79,7 +135,7 @@ def main() -> None:
             if path.exists():
                 skip += 1
             else:
-                df = _fetch_day(s, d)
+                df = _fetch_day(s, d, idx)
                 if df is None or df.empty:
                     holiday += 1
                 else:
