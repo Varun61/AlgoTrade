@@ -211,7 +211,9 @@ def main() -> None:
             s = bk.summary()
             print(f"  {name:<10} trades={s['trades']}  total=₹{s['total_pnl_rs']:,.0f}  "
                   f"win%={s['win_rate']}  avg=₹{s.get('avg_rs',0):,.0f}")
-        print(f"\n  Logs: logs/options_paper.jsonl + logs/options_paper_em.jsonl")
+        print(f"\n  Logs: options_paper.jsonl (A) | options_paper_em.jsonl (B) | "
+              f"options_paper_postmove.jsonl (C)")
+        print(f"  (a variant's log only appears once it has opened a trade)")
         print(f"  Compare vs backtest:  python -m tools.compare_paper_backtest\n")
     finally:
         sm.logout()
