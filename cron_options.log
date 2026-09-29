@@ -1,0 +1,52 @@
+=== Options paper runner: Tue Sep 29 03:50:01 PM IST 2026 ===
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73869, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 2 for 73869, backing off 4.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 3 for 73869, backing off 8.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73870, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73872, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73876, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 2 for 73876, backing off 4.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73881, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73882, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 55284, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73887, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73890, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73897, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73900, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73905, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 2 for 73905, backing off 4.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+WARNING [HistoricalFetcher] Rate limited (exception) on attempt 1 for 73921, backing off 2.0s: Couldn't parse the JSON response received from the server: b'Access denied because of exceeding access rate'
+
+NIFTY options paper run — 2026-09-29 15:50
+  signals: spot=22716.2 VIX=13.41 VIX%ile=None IV/RV=1.00 prev5d=0.00%
+
+======================================================
+ 1. Collecting real option data
+======================================================
+  collected 3839 new rows
+
+======================================================
+ 2. Opening paper condors (if gates pass)
+======================================================
+  [weekly] SKIP: VIX %ile None < 55
+  [weekly_em] SKIP: VIX %ile None < 55
+  [weekly_postmove] SKIP: VIX %ile None < 55
+
+======================================================
+ 3. Settling expired condors
+======================================================
+  [weekly] settled 0
+  [weekly_em] settled 0
+  [weekly_postmove] settled 0
+
+======================================================
+ 4. Paper P&L so far
+======================================================
+  weekly     trades=0  total=₹0  win%=0.0  avg=₹0
+  weekly_em  trades=0  total=₹0  win%=0.0  avg=₹0
+  weekly_postmove trades=0  total=₹0  win%=0.0  avg=₹0
+
+  Logs: logs/options_paper.jsonl + logs/options_paper_em.jsonl
+  Compare vs backtest:  python -m tools.compare_paper_backtest
+
+=== Done: Tue Sep 29 03:56:56 PM IST 2026 ===

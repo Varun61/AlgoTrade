@@ -159,24 +159,29 @@ def main() -> None:
 
         # 2) OPEN each variant if its gate passes  (A=fixed, B=expected-move, C=post-move)
         _hr("2. Opening paper condors (if gates pass)")
-        vix_ok = vpct is not None and vpct >= WEEKLY_VIX_MIN_PCTL
-        # A — fixed 3/2, VIX gate
-        _open_variant("weekly", book_fixed, R, obj, nopt, exp, exp_str,
-                      build_condor_strikes(spot, WEEKLY_SHORT_PCT, WEEKLY_WING_PCT),
-                      vix_ok, f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}", spot, meta)
-        # B — expected-move strikes, VIX + IV/RV gate
-        em_ok = vix_ok and iv_rv >= EM_IVRV_MIN
-        em_msg = f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}" if not vix_ok else f"IV/RV {iv_rv:.2f} < {EM_IVRV_MIN}"
-        if vix_latest:
-            _open_variant("weekly_em", book_em, R, obj, nopt, exp, exp_str,
-                          build_em_condor_strikes(spot, vix_latest, EM_SHORT_MULT, EM_WING_MULT),
-                          em_ok, em_msg, spot, meta)
-        # C — post-move: fixed 3/2, VIX gate + prior-week |move| >= 2% (FROZEN rules)
-        pm_ok = vix_ok and abs(ret5) >= EM_POSTMOVE_RET5_MIN
-        pm_msg = f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}" if not vix_ok else f"prev5d {ret5:.1f}% < {EM_POSTMOVE_RET5_MIN}% (no big prior move)"
-        _open_variant("weekly_postmove", book_pm, R, obj, nopt, exp, exp_str,
-                      build_condor_strikes(spot, WEEKLY_SHORT_PCT, WEEKLY_WING_PCT),
-                      pm_ok, pm_msg, spot, meta)
+        if vpct is None or not nifty_closes:
+            print("  ❌ DATA ERROR: VIX/NIFTY history unavailable or corrupt — cannot "
+                  "evaluate the gates. This is NOT a normal skip. Fix the cache in "
+                  "data/.cache/index/ and re-run. NOT trading blind. (Settling still runs.)")
+        else:
+            vix_ok = vpct >= WEEKLY_VIX_MIN_PCTL
+            # A — fixed 3/2, VIX gate
+            _open_variant("weekly", book_fixed, R, obj, nopt, exp, exp_str,
+                          build_condor_strikes(spot, WEEKLY_SHORT_PCT, WEEKLY_WING_PCT),
+                          vix_ok, f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}", spot, meta)
+            # B — expected-move strikes, VIX + IV/RV gate
+            em_ok = vix_ok and iv_rv >= EM_IVRV_MIN
+            em_msg = f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}" if not vix_ok else f"IV/RV {iv_rv:.2f} < {EM_IVRV_MIN}"
+            if vix_latest:
+                _open_variant("weekly_em", book_em, R, obj, nopt, exp, exp_str,
+                              build_em_condor_strikes(spot, vix_latest, EM_SHORT_MULT, EM_WING_MULT),
+                              em_ok, em_msg, spot, meta)
+            # C — post-move: fixed 3/2, VIX gate + prior-week |move| >= 2% (FROZEN rules)
+            pm_ok = vix_ok and abs(ret5) >= EM_POSTMOVE_RET5_MIN
+            pm_msg = f"VIX %ile {vpct} < {WEEKLY_VIX_MIN_PCTL:.0f}" if not vix_ok else f"prev5d {ret5:.1f}% < {EM_POSTMOVE_RET5_MIN}% (no big prior move)"
+            _open_variant("weekly_postmove", book_pm, R, obj, nopt, exp, exp_str,
+                          build_condor_strikes(spot, WEEKLY_SHORT_PCT, WEEKLY_WING_PCT),
+                          pm_ok, pm_msg, spot, meta)
 
         # 3) SETTLE expired condors for all variants
         _hr("3. Settling expired condors")

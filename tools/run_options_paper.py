@@ -68,26 +68,41 @@ def _ltp(obj, exch, symbol, token):
 _VIX_CSV = Path(__file__).parent.parent / "data" / ".cache" / "index" / "vix_1d.csv"
 
 
+_MIN_HISTORY = 60   # never treat fewer cached rows than this as valid history
+
+
+def _load_series(csv_path):
+    """Load a cached daily series (timestamp,close,...) as a tz-normalized DataFrame.
+    Returns None if the file is missing or has too little history — callers must
+    treat None as a DATA ERROR (not a reason to trade blind or overwrite the cache)."""
+    if not csv_path.exists():
+        print(f"  WARNING: {csv_path.name} missing — cannot compute vol gates."); return None
+    df = pd.read_csv(csv_path)
+    ts = pd.to_datetime(df["timestamp"], format="mixed", errors="coerce", utc=True)
+    df = df.assign(ts=ts.dt.tz_convert("Asia/Kolkata")).dropna(subset=["ts"]).sort_values("ts")
+    if len(df) < _MIN_HISTORY:
+        print(f"  WARNING: {csv_path.name} has only {len(df)} valid rows (<{_MIN_HISTORY}) — "
+              f"history looks corrupted; NOT using and NOT overwriting it."); return None
+    return df
+
+
 def update_and_get_vix(obj) -> list[float]:
     """Append today's live India VIX to the cached daily series (dedup by date) so
     the 60-day percentile stays current, and return the list of daily closes.
-    If the live fetch fails, returns whatever history is cached (may be stale)."""
-    df = None
-    if _VIX_CSV.exists():
-        df = pd.read_csv(_VIX_CSV)
-        # tz-aware parse (handles the +05:30 cache); normalize to IST dates
-        ts = pd.to_datetime(df["timestamp"], format="mixed", errors="coerce", utc=True)
-        df = df.assign(ts=ts.dt.tz_convert("Asia/Kolkata")).dropna(subset=["ts"]).sort_values("ts")
+    Returns [] (not a truncated series) if the cache is missing/corrupt, so the
+    caller fails LOUD instead of skipping forever or overwriting good history."""
+    df = _load_series(_VIX_CSV)
+    if df is None:
+        return []
     today = pd.Timestamp(datetime.now().date(), tz="Asia/Kolkata")
     live = _ltp(obj, "NSE", "India VIX", INDIA_VIX_TOKEN)
-    if live is not None and df is not None and today.date() not in set(df["ts"].dt.date):
+    if live is not None and today.date() not in set(df["ts"].dt.date):
         new = pd.DataFrame([{"close": live, "ts": today}])
         df = pd.concat([df[["close", "ts"]], new], ignore_index=True).sort_values("ts")
-        # rewrite the WHOLE timestamp column in one consistent tz-aware format
         out = df.copy()
         out["timestamp"] = out["ts"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
-        out[["timestamp", "close"]].to_csv(_VIX_CSV, index=False)
-    closes = df["close"].dropna().tolist() if df is not None else []
+        out[["timestamp", "close"]].to_csv(_VIX_CSV, index=False)  # safe: df >= _MIN_HISTORY
+    closes = df["close"].dropna().tolist()
     if live is not None and (not closes or closes[-1] != live):
         closes.append(live)
     return closes
@@ -98,21 +113,20 @@ _NIFTY_CSV = Path(__file__).parent.parent / "data" / ".cache" / "index" / "nifty
 
 def update_and_get_nifty(obj, spot: float | None = None) -> list[float]:
     """Append today's NIFTY close to the cached daily series (dedup by date) and
-    return the list of daily closes — used to compute realized volatility."""
-    df = None
-    if _NIFTY_CSV.exists():
-        df = pd.read_csv(_NIFTY_CSV)
-        ts = pd.to_datetime(df["timestamp"], format="mixed", errors="coerce", utc=True)
-        df = df.assign(ts=ts.dt.tz_convert("Asia/Kolkata")).dropna(subset=["ts"]).sort_values("ts")
+    return the list of daily closes — used to compute realized volatility.
+    Returns [] if the cache is missing/corrupt (fail loud, don't overwrite)."""
+    df = _load_series(_NIFTY_CSV)
+    if df is None:
+        return []
     if spot is None:
         spot = _ltp(obj, "NSE", "Nifty 50", NIFTY_SPOT_TOKEN)
     today = pd.Timestamp(datetime.now().date(), tz="Asia/Kolkata")
-    if spot is not None and df is not None and today.date() not in set(df["ts"].dt.date):
+    if spot is not None and today.date() not in set(df["ts"].dt.date):
         new = pd.DataFrame([{"close": spot, "ts": today}])
         df = pd.concat([df[["close", "ts"]], new], ignore_index=True).sort_values("ts")
         out = df.copy(); out["timestamp"] = out["ts"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
         out[["timestamp", "close"]].to_csv(_NIFTY_CSV, index=False)
-    closes = df["close"].dropna().tolist() if df is not None else []
+    closes = df["close"].dropna().tolist()
     if spot is not None and (not closes or closes[-1] != spot):
         closes.append(spot)
     return closes

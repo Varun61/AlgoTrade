@@ -45,3 +45,15 @@ def test_should_sell_sits_out_without_history():
     # insufficient history -> conservatively sit out
     sell, pctl = should_sell([])
     assert sell is False and pctl is None
+
+
+
+def test_load_series_rejects_short_history(tmp_path):
+    """Guard: a truncated/corrupt cache must return None (fail loud), never a
+    tiny series that would (a) skip forever or (b) get written back over good data."""
+    import tools.run_options_paper as R
+    import pandas as pd
+    bad = tmp_path / "vix_bad.csv"
+    pd.DataFrame({"timestamp": ["2026-09-29 00:00:00+0530"], "close": [13.6]}).to_csv(bad, index=False)
+    assert R._load_series(bad) is None            # only 1 row (< _MIN_HISTORY)
+    assert R._load_series(tmp_path / "missing.csv") is None  # missing file
