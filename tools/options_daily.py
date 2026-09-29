@@ -36,6 +36,8 @@ from options.vix_filter import vix_percentile
 
 STRIKES_EACH_SIDE = 12
 CANDLE_INTERVAL = 5
+MIN_DTE_ENTRY = 3          # enter only when the nearest expiry is >=3 days out
+MAX_DTE_ENTRY = 10         # ... and <=10 (matches the backtest's entry window)
 _LOG_DIR = Path(__file__).parent.parent / "logs"
 
 
@@ -123,9 +125,18 @@ def main() -> None:
         fetcher = HistoricalFetcher(obj)
         nopt = R._nifty_options(master)
         spot = R._ltp(obj, "NSE", "Nifty 50", R.NIFTY_SPOT_TOKEN)
+        # Match the backtest: enter the nearest expiry that is MIN..MAX days out.
+        # This makes the runner robust to WHICH weekday it runs — it never enters a
+        # 0-1 DTE contract (near-worthless) and never has to be run on a specific day.
+        today = pd.Timestamp.now().normalize()
         future = sorted(e for e in nopt["exp_dt"].dropna().unique()
-                        if e >= pd.Timestamp.now().normalize())
-        exp = future[0]; exp_str = pd.Timestamp(exp).date().isoformat()
+                        if MIN_DTE_ENTRY <= (pd.Timestamp(e).normalize() - today).days <= MAX_DTE_ENTRY)
+        if not future:
+            print(f"\n  No expiry {MIN_DTE_ENTRY}-{MAX_DTE_ENTRY} days out today — nothing to open "
+                  f"(will settle only). Re-runs any weekday self-correct to the right cycle.")
+            exp = None
+        else:
+            exp = future[0]; exp_str = pd.Timestamp(exp).date().isoformat()
 
         # --- volatility signals (shared) ---
         vseries = R.update_and_get_vix(obj)
@@ -141,6 +152,8 @@ def main() -> None:
         # 1) COLLECT real option data around ATM
         _hr("1. Collecting real option data")
         try:
+            if exp is None:
+                raise RuntimeError("no target expiry today")
             atm = round(spot / C._STEP) * C._STEP
             strikes = [atm + k * C._STEP for k in range(-STRIKES_EACH_SIDE, STRIKES_EACH_SIDE + 1)]
             to_d = datetime.now(); fr_d = to_d - timedelta(days=1)
@@ -159,7 +172,10 @@ def main() -> None:
 
         # 2) OPEN each variant if its gate passes  (A=fixed, B=expected-move, C=post-move)
         _hr("2. Opening paper condors (if gates pass)")
-        if vpct is None or not nifty_closes:
+        if exp is None:
+            print("  no target expiry 3-10 days out — skipping opens (already in a cycle, "
+                  "or too close to expiry). Settling still runs below.")
+        elif vpct is None or not nifty_closes:
             print("  ❌ DATA ERROR: VIX/NIFTY history unavailable or corrupt — cannot "
                   "evaluate the gates. This is NOT a normal skip. Fix the cache in "
                   "data/.cache/index/ and re-run. NOT trading blind. (Settling still runs.)")

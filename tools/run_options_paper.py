@@ -112,23 +112,20 @@ _NIFTY_CSV = Path(__file__).parent.parent / "data" / ".cache" / "index" / "nifty
 
 
 def update_and_get_nifty(obj, spot: float | None = None) -> list[float]:
-    """Append today's NIFTY close to the cached daily series (dedup by date) and
-    return the list of daily closes — used to compute realized volatility.
-    Returns [] if the cache is missing/corrupt (fail loud, don't overwrite)."""
+    """Return the list of daily NIFTY closes (cache + today's live spot appended
+    in-memory), used to compute realized volatility.
+
+    READ-ONLY: this NEVER rewrites nifty_1d.csv — that file is the backtest's OHLC
+    source and must keep its open/high/low/close/volume columns. (An earlier version
+    rewrote it as timestamp,close and destroyed the OHLC — do not reintroduce that.)"""
     df = _load_series(_NIFTY_CSV)
     if df is None:
         return []
+    closes = df["close"].dropna().tolist()
     if spot is None:
         spot = _ltp(obj, "NSE", "Nifty 50", NIFTY_SPOT_TOKEN)
-    today = pd.Timestamp(datetime.now().date(), tz="Asia/Kolkata")
-    if spot is not None and today.date() not in set(df["ts"].dt.date):
-        new = pd.DataFrame([{"close": spot, "ts": today}])
-        df = pd.concat([df[["close", "ts"]], new], ignore_index=True).sort_values("ts")
-        out = df.copy(); out["timestamp"] = out["ts"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
-        out[["timestamp", "close"]].to_csv(_NIFTY_CSV, index=False)
-    closes = df["close"].dropna().tolist()
     if spot is not None and (not closes or closes[-1] != spot):
-        closes.append(spot)
+        closes.append(spot)   # in-memory only; do not persist
     return closes
 
 
